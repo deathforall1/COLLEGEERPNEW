@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>XLRI Timetable Sync Bot</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+</head>
+<body>
+  <!-- Ambient background glow elements -->
+  <div class="bg-glow bg-glow-1"></div>
+  <div class="bg-glow bg-glow-2"></div>
+  <div class="bg-glow bg-glow-3"></div>
+
+  <div class="container">
+    <!-- Header -->
+    <header class="main-header">
+      <div class="logo-area">
+        <span class="logo-icon">🗓️</span>
+        <h1>XLRI Calendar Bot</h1>
+      </div>
+      <p class="subtitle">Sync your classes, academic activities, and holidays directly to your Google Calendar.</p>
+    </header>
+
+    <main class="main-content">
+      <!-- Card 1: Connection Form -->
+      <section class="card connection-card" id="connection-card">
+        <div class="card-header">
+          <h2>Connect Your ERP Account</h2>
+          <p>The bot logs in to XLRI ERP securely to fetch your personalized schedule.</p>
+        </div>
+        
+        <form id="login-form" class="login-form">
+          <div class="form-group">
+            <label for="email">ERP Email Address</label>
+            <input type="email" id="email" placeholder="e.g., h25xxx@astra.xlri.ac.in" required autocomplete="email">
+          </div>
+          
+          <div class="form-group">
+            <label for="password">ERP Password</label>
+            <input type="password" id="password" placeholder="Enter your ERP password" required autocomplete="current-password">
+          </div>
+
+          <div class="disclaimer">
+            <span class="lock-icon">🔒</span>
+            <p>Your password is sent over secure HTTPS and is only used to query the official XL ERP API. It is not stored in the cloud.</p>
+          </div>
+          
+          <button type="submit" id="btn-submit" class="btn btn-primary">
+            <span class="btn-text">Generate Calendar Link</span>
+            <span class="btn-loader hidden"></span>
+          </button>
+        </form>
+
+        <div id="error-message" class="error-box hidden">
+          <span class="error-icon">⚠️</span>
+          <p class="error-text"></p>
+        </div>
+      </section>
+
+      <!-- Card 2: Success Dashboard & Calendar Setup -->
+      <section class="card success-card hidden" id="success-card">
+        <div class="success-header">
+          <div class="success-badge">✓ Connection Live</div>
+          <h2 id="student-name">Welcome Back!</h2>
+          <p id="student-meta" class="student-meta">MBA Student · Batch 2025</p>
+        </div>
+
+        <!-- Sync Link Generation -->
+        <div class="feed-section">
+          <h3>Your Google Calendar Subscription Link</h3>
+          <p class="feed-desc">Copy this URL and add it to Google Calendar. Anyone with this link can view your schedule (share with your batch mates if needed!).</p>
+          
+          <div class="copy-box">
+            <input type="text" id="feed-url" readonly value="https://...">
+            <button id="btn-copy" class="btn btn-secondary">Copy Link</button>
+          </div>
+          
+          <div class="direct-download">
+            <a id="btn-download" href="#" download="calendar.ics" class="btn btn-ghost">
+              <span>📥 Download Calendar File (.ics)</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Course Sections Configuration -->
+        <div class="sections-section" id="sections-section">
+          <div class="sections-header-title">
+            <h3>Filter Classes by Your Sections</h3>
+            <p class="sections-desc">Select your section (A, B, C, D, etc.) for each registered course. Sessions scheduled for other sections will be hidden from your calendar feed.</p>
+          </div>
+          
+          <form id="sections-form" class="sections-form">
+            <div class="courses-list" id="courses-list">
+              <!-- Rendered dynamically -->
+              <div class="loader-placeholder">Loading registered courses...</div>
+            </div>
+            
+            <div class="sections-actions">
+              <button type="submit" id="btn-save-sections" class="btn btn-secondary btn-save">
+                <span class="save-btn-text">Save Sections & Filter Feed</span>
+                <span class="save-btn-loader btn-loader hidden"></span>
+              </button>
+            </div>
+          </form>
+          
+          <div id="sections-success-message" class="toast-message hidden">
+            ✓ Course sections saved! Timetable and calendar feed updated.
+          </div>
+        </div>
+
+        <!-- Tabbed Instruction Panel -->
+        <div class="instructions-section">
+          <h3>How to Add to Your Calendar</h3>
+          
+          <div class="tab-headers">
+            <button class="tab-btn active" data-tab="gcal">Google Calendar</button>
+            <button class="tab-btn" data-tab="ical">Apple Calendar</button>
+            <button class="tab-btn" data-tab="outlook">Outlook / Other</button>
+          </div>
+          
+          <div class="tab-contents">
+            <div class="tab-pane active" id="tab-gcal">
+              <ol class="step-list">
+                <li>Open <a href="https://calendar.google.com" target="_blank" rel="noopener">Google Calendar</a> in a desktop web browser.</li>
+                <li>On the left sidebar, click the <strong>plus sign (+)</strong> next to <em>"Other calendars"</em>.</li>
+                <li>Select <strong>"From URL"</strong> from the dropdown menu.</li>
+                <li>Paste your subscription link copied above into the URL box.</li>
+                <li>Click <strong>"Add calendar"</strong>. Your schedule will sync within a few minutes!</li>
+              </ol>
+            </div>
+            
+            <div class="tab-pane" id="tab-ical">
+              <ol class="step-list">
+                <li>Open the <strong>Calendar app</strong> on your Mac, iPhone, or iPad.</li>
+                <li>Go to <em>File</em> > <strong>New Calendar Subscription...</strong> (Mac) or tap <em>Calendars</em> > <strong>Add Subscription Calendar</strong> (iOS).</li>
+                <li>Paste your subscription link into the Calendar URL field and click <strong>Subscribe</strong>.</li>
+                <li>Set the auto-refresh interval to <strong>Every hour</strong> or <strong>Every day</strong> to receive automatic updates.</li>
+              </ol>
+            </div>
+            
+            <div class="tab-pane" id="tab-outlook">
+              <ol class="step-list">
+                <li>Open Outlook Web or Desktop.</li>
+                <li>Navigate to the Calendar view, click <strong>Add Calendar</strong> and select <strong>Subscribe from web</strong>.</li>
+                <li>Paste your link and name the calendar (e.g., "XLRI ERP Schedule").</li>
+                <li>Click <strong>Import</strong>.</li>
+              </ol>
+            </div>
+          </div>
+        </div>
+
+        <!-- Timetable Preview Dashboard -->
+        <div class="preview-section">
+          <div class="preview-header">
+            <h3>Timetable Preview</h3>
+            <span class="preview-badge" id="preview-counts">0 classes loaded</span>
+          </div>
+          <p class="preview-desc">A live preview of your schedule fetched from the ERP.</p>
+
+          <div class="preview-tabs">
+            <button class="preview-tab-btn active" data-view="sessions">Classes</button>
+            <button class="preview-tab-btn" data-view="activities">Activities</button>
+            <button class="preview-tab-btn" data-view="holidays">Holidays</button>
+          </div>
+
+          <div class="preview-container" id="preview-container">
+            <!-- Dynamic elements will be inserted here -->
+            <div class="loader-placeholder">Loading preview...</div>
+          </div>
+        </div>
+
+        <div class="card-footer">
+          <button id="btn-reconnect" class="btn btn-ghost">Disconnect Account</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="main-footer">
+      <p>Created for XLRI Students · Smart Caching active (refreshes schedule every 4 hours)</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
