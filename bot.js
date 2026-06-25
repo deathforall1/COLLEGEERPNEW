@@ -9,6 +9,7 @@ const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000';
 
 // Candidate paths for discovery
 const MENU_CANDIDATES = [
+  '/mess-menu/me',
   '/me/mess-menu',
   '/me/mess-menu/my',
   '/mess-menu/my',
@@ -22,6 +23,7 @@ const MENU_CANDIDATES = [
 ];
 
 const GRADES_CANDIDATES = [
+  '/course-offerings/me/grades',
   '/me/grades',
   '/me/grades/my',
   '/student-grids',
