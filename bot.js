@@ -1,7 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api').TelegramBot || require('node-telegram-bot-api');
 const axios = require('axios');
 const { initDatabase, saveUser, saveUserSections, getUser, deleteUser } = require('./database');
-const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses } = require('./erp-client');
+const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPMessMenu, fetchXLRIERPGrades } = require('./erp-client');
 const { initScheduler } = require('./scheduler');
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -388,8 +388,8 @@ function initBot() {
     });
   });
 
-  // /mess_menu command (Provisional discovery)
-  bot.onText(/\/mess_menu/, async (msg) => {
+  // /mess_menu command
+  bot.onText(/\/mess_menu(?:\s+(.+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const user = await getUser(chatId);
 
@@ -397,25 +397,75 @@ function initBot() {
       return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
     }
 
-    const loadingMsg = await bot.sendMessage(chatId, `🍽️ *Scanning ERP endpoints for Mess Menu...*`, { parse_mode: 'Markdown' });
+    const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const tzOffset = 5.5 * 60 * 60 * 1000;
+    const todayIST = new Date(Date.now() + tzOffset);
+    
+    let targetDay = daysOfWeek[todayIST.getUTCDay()];
+    let label = 'Today';
+
+    if (match[1]) {
+      const arg = match[1].toLowerCase().trim();
+      if (arg === 'tomorrow' || arg === 'tmrw') {
+        const tomorrowIST = new Date(todayIST.getTime() + 24 * 60 * 60 * 1000);
+        targetDay = daysOfWeek[tomorrowIST.getUTCDay()];
+        label = 'Tomorrow';
+      } else if (daysOfWeek.includes(arg)) {
+        targetDay = arg;
+        label = arg.charAt(0).toUpperCase() + arg.slice(1);
+      } else {
+        return bot.sendMessage(chatId, `⚠️ *Invalid Day.*\nUse: \`/mess_menu\` (today), \`/mess_menu tomorrow\`, or e.g. \`/mess_menu monday\`.`, { parse_mode: 'Markdown' });
+      }
+    }
+
+    const loadingMsg = await bot.sendMessage(chatId, `🍽️ *Fetching Mess Menu for ${label}...*`, { parse_mode: 'Markdown' });
 
     try {
-      const result = await probeERPEndpoints(user.email, user.password, MENU_CANDIDATES);
+      const menuData = await fetchXLRIERPMessMenu(user.email, user.password);
       
-      if (result) {
-        let response = `🍽️ *Mess Menu Found!* (via \`${result.path}\`)\n\n`;
-        response += `\`\`\`json\n${JSON.stringify(result.data, null, 2).slice(0, 3000)}\n\`\`\``;
+      if (menuData && menuData.success && menuData.data) {
+        const data = menuData.data;
+        const messName = data.mess?.name || 'Mess';
+        const month = data.month || '';
+        
+        let response = `🍽️ *Mess Menu for ${label} (${targetDay.charAt(0).toUpperCase() + targetDay.slice(1)})* 🍽️\n`;
+        response += `🏫 *Mess:* ${messName}\n`;
+        if (month) response += `📅 *Month:* ${month.charAt(0).toUpperCase() + month.slice(1)}\n`;
+        response += `\n`;
+        
+        let mealsFound = false;
+        if (Array.isArray(data.meals)) {
+          data.meals.forEach(meal => {
+            let mealText = '';
+            if (Array.isArray(meal.items)) {
+              meal.items.forEach(item => {
+                const itemDayValue = item.days?.[targetDay];
+                if (itemDayValue && itemDayValue.trim()) {
+                  mealText += `  • *${item.category}:* ${itemDayValue.trim()}\n`;
+                }
+              });
+            }
+            if (mealText) {
+              response += `🍳 *${meal.mealType}*\n${mealText}\n`;
+              mealsFound = true;
+            }
+          });
+        }
+        
+        if (!mealsFound) {
+          response += `ℹ️ No menu items found scheduled for ${targetDay}.`;
+        }
+        
         bot.editMessageText(response, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
       } else {
-        const errorText = `⚠️ *Mess Menu Endpoint Not Found*\n\nWe probed candidate paths but the ERP did not respond on them.\n\n💡 *How to solve this:*\n1. Log in to ERP on your computer browser.\n2. Open Developer Tools (**Inspect** $\rightarrow$ **Network** tab).\n3. Click on the **Mess Menu** page in the ERP.\n4. Share the API request URL (e.g. \`/api/v1/...\`) with the developer to link this command permanently!`;
-        bot.editMessageText(errorText, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+        bot.editMessageText(`⚠️ *Mess Menu Empty/Unavailable.*\nCould not retrieve structured menu data from the ERP.`, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
       }
     } catch (err) {
       bot.editMessageText(`❌ Connection error: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
     }
   });
 
-  // /grades command (Provisional discovery)
+  // /grades command
   bot.onText(/\/grades/, async (msg) => {
     const chatId = msg.chat.id;
     const user = await getUser(chatId);
@@ -424,18 +474,57 @@ function initBot() {
       return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
     }
 
-    const loadingMsg = await bot.sendMessage(chatId, `📈 *Scanning ERP endpoints for Grades/Grids...*`, { parse_mode: 'Markdown' });
+    const loadingMsg = await bot.sendMessage(chatId, `📈 *Fetching your Grades/CGPA...*`, { parse_mode: 'Markdown' });
 
     try {
-      const result = await probeERPEndpoints(user.email, user.password, GRADES_CANDIDATES);
+      const gradesData = await fetchXLRIERPGrades(user.email, user.password);
       
-      if (result) {
-        let response = `📈 *Grades Found!* (via \`${result.path}\`)\n\n`;
-        response += `\`\`\`json\n${JSON.stringify(result.data, null, 2).slice(0, 3000)}\n\`\`\``;
-        bot.editMessageText(response, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+      if (gradesData && gradesData.success && gradesData.data) {
+        const data = gradesData.data;
+        const studentName = data.student?.name || 'Student';
+        const studentId = data.student?.studentId || '';
+        
+        let response = `📈 *Your Grades & CGPA* 📈\n`;
+        response += `👤 *Name:* ${studentName} (${studentId})\n`;
+        if (data.summary) {
+          response += `⭐️ *CGPA:* \`${data.summary.cgpa || 'N/A'}\`\n`;
+          response += `📚 *Credits:* ${data.summary.totalCredits || 0} | *Courses:* ${data.summary.totalCourses || 0} | *Terms:* ${data.summary.totalTerms || 0}\n`;
+        }
+        response += `\n`;
+
+        let messages = [];
+        let currentMsg = response;
+
+        if (Array.isArray(data.terms)) {
+          data.terms.forEach(term => {
+            let termText = `*Term ${term.termCode || 'N/A'}* (GPA: \`${term.gpa || 'N/A'}\` | Credits: ${term.totalCredits || 0})\n`;
+            if (Array.isArray(term.courses)) {
+              term.courses.forEach(c => {
+                const grade = c.finalGrade || c.grade || '-';
+                termText += `  • \`${c.courseCode}\`: *${grade}* (${c.courseOfferCredit || 0} Cr) - ${c.courseName}\n`;
+              });
+            }
+            termText += `\n`;
+            
+            if (currentMsg.length + termText.length > 4000) {
+              messages.push(currentMsg);
+              currentMsg = termText;
+            } else {
+              currentMsg += termText;
+            }
+          });
+        }
+        messages.push(currentMsg);
+
+        for (let i = 0; i < messages.length; i++) {
+          if (i === 0) {
+            await bot.editMessageText(messages[i], { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+          } else {
+            await bot.sendMessage(chatId, messages[i], { parse_mode: 'Markdown' });
+          }
+        }
       } else {
-        const errorText = `⚠️ *Grades/Grids Endpoint Not Found*\n\nWe probed candidate paths but the ERP did not respond on them.\n\n💡 *How to solve this:*\n1. Log in to ERP on your computer browser.\n2. Open Developer Tools (**Inspect** $\rightarrow$ **Network** tab).\n3. Click on the **Grades/Grids** page in the ERP.\n4. Share the API request URL (e.g. \`/api/v1/...\`) with the developer to link this command permanently!`;
-        bot.editMessageText(errorText, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+        bot.editMessageText(`⚠️ *Grades Empty/Unavailable.*\nCould not retrieve structured grades data from the ERP.`, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
       }
     } catch (err) {
       bot.editMessageText(`❌ Connection error: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });

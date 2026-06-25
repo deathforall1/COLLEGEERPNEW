@@ -168,8 +168,60 @@ async function fetchXLRIERPData(email, password) {
   };
 }
 
+async function fetchXLRIERPMessMenu(email, password) {
+  const ERP_BASE = 'https://xlerp.xlri.ac.in/api/v1';
+  console.log(`[ERP] Fetching mess menu for user: ${email}`);
+  const loginRes = await axios.post(`${ERP_BASE}/auth/login`, {
+    email,
+    password
+  }, {
+    headers: { 'Content-Type': 'application/json' },
+    timeout: 10000
+  });
+
+  const token = loginRes.data?.token || loginRes.data?.data?.token;
+  if (!token) {
+    throw new Error('Authentication failed.');
+  }
+
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  };
+
+  const menuRes = await axios.get(`${ERP_BASE}/mess-menu/me`, { headers, timeout: 10000 });
+  return menuRes.data;
+}
+
+async function fetchXLRIERPGrades(email, password) {
+  const ERP_BASE = 'https://xlerp.xlri.ac.in/api/v1';
+  console.log(`[ERP] Fetching grades for user: ${email}`);
+  const loginRes = await axios.post(`${ERP_BASE}/auth/login`, {
+    email,
+    password
+  }, {
+    headers: { 'Content-Type': 'application/json' },
+    timeout: 10000
+  });
+
+  const token = loginRes.data?.token || loginRes.data?.data?.token;
+  if (!token) {
+    throw new Error('Authentication failed.');
+  }
+
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  };
+
+  const gradesRes = await axios.get(`${ERP_BASE}/course-offerings/me/grades`, { headers, timeout: 10000 });
+  return gradesRes.data;
+}
+
 module.exports = {
   sessionMatchesSection,
   activityMatchesCourses,
-  fetchXLRIERPData
+  fetchXLRIERPData,
+  fetchXLRIERPMessMenu,
+  fetchXLRIERPGrades
 };
