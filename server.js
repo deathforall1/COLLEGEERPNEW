@@ -65,6 +65,34 @@ function sessionMatchesSection(session, userSections) {
 }
 
 /**
+ * Activity filtering logic: check if the activity is academic and if its prefix code
+ * matches any of the student's registered course codes.
+ * e.g., "LSC - Quiz" matches only if student has course "LSC".
+ */
+function activityMatchesCourses(activity, registeredCourses) {
+  if (activity.type !== 'Academic') {
+    return true; // Keep all non-academic activities
+  }
+
+  const name = activity.name || '';
+  // Look for a pattern like "CODE - Activity Name" (e.g., "SDM - Mid-Term" or "LSC - Quiz")
+  const match = name.match(/^([A-Za-z0-9]+)\s*-\s*/);
+  if (!match) {
+    return true; // If it doesn't match the pattern, keep it (fail-safe)
+  }
+
+  const courseCodePrefix = match[1].toUpperCase().trim();
+
+  // Check if this courseCodePrefix matches any of the user's registered course codes
+  const hasCourse = registeredCourses.some(c => {
+    const code = (c.courseCode || '').toUpperCase().trim();
+    return code === courseCodePrefix;
+  });
+
+  return hasCourse;
+}
+
+/**
  * Core helper to login and fetch timetable data from XLRI ERP
  */
 async function fetchXLRIERPData(email, password) {
@@ -213,8 +241,11 @@ app.get('/api/calendar', async (req, res) => {
       if (!activeCourseOfferIds.has(s.courseOfferId)) return false; // exclude if not registered
       return sessionMatchesSection(s, sections); // check section match
     });
+
+    // Filter activities: only keep academic activities if they belong to registered courses
+    const filteredActivities = data.activities.filter(act => activityMatchesCourses(act, data.courses));
     
-    const icsContent = generateICS(filteredSessions, data.activities, data.holidays);
+    const icsContent = generateICS(filteredSessions, filteredActivities, data.holidays);
 
     // Save to cache (raw data + current sections)
     cache[email.toLowerCase()] = {
@@ -275,8 +306,11 @@ app.post('/api/preview', async (req, res) => {
       if (!activeCourseOfferIds.has(s.courseOfferId)) return false;
       return sessionMatchesSection(s, sections);
     });
+
+    // Filter activities: only keep academic activities if they belong to registered courses
+    const filteredActivities = data.activities.filter(act => activityMatchesCourses(act, data.courses));
     
-    const icsContent = generateICS(filteredSessions, data.activities, data.holidays);
+    const icsContent = generateICS(filteredSessions, filteredActivities, data.holidays);
 
     // Save to cache (raw data + current sections)
     cache[email.toLowerCase()] = {
@@ -298,10 +332,10 @@ app.post('/api/preview', async (req, res) => {
       courses: data.courses,
       savedSections: sections,
       sessionsCount: filteredSessions.length,
-      activitiesCount: data.activities.length,
+      activitiesCount: filteredActivities.length,
       holidaysCount: data.holidays.length,
       sessions: filteredSessions, // Return filtered sessions list
-      activities: data.activities,
+      activities: filteredActivities,
       holidays: data.holidays
     });
   } catch (err) {
@@ -350,9 +384,12 @@ app.post('/api/save-sections', async (req, res) => {
       if (!activeCourseOfferIds.has(s.courseOfferId)) return false;
       return sessionMatchesSection(s, sections);
     });
+
+    // Filter activities: only keep academic activities if they belong to registered courses
+    const filteredActivities = cachedData.activities.filter(act => activityMatchesCourses(act, cachedData.courses));
     
     // Regenerate ICS Content
-    const icsContent = generateICS(filteredSessions, cachedData.activities, cachedData.holidays);
+    const icsContent = generateICS(filteredSessions, filteredActivities, cachedData.holidays);
     cachedData.icsContent = icsContent;
     cachedData.cachedAt = Date.now(); // Reset cache age so calendar fetches the new version
 
