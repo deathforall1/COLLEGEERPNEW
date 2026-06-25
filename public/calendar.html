@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>XLRI ERP Monthly Calendar</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <!-- CSS Stylesheet -->
+  <link rel="stylesheet" href="styles.css">
+  
+  <!-- Telegram WebApp SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+  <style>
+    body {
+      padding-bottom: 2rem;
+    }
+
+    .calendar-container {
+      width: 100%;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      backdrop-filter: blur(12px);
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+
+    .calendar-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.5rem;
+    }
+
+    .calendar-header h2 {
+      font-family: var(--font-title);
+      font-size: 1.3rem;
+      font-weight: 600;
+      background: var(--primary-gradient);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .nav-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--card-border);
+      color: var(--text-primary);
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .nav-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .weekdays-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      text-align: center;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .days-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 6px;
+    }
+
+    .day-cell {
+      aspect-ratio: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      position: relative;
+      transition: all 0.2s ease;
+      background: rgba(255, 255, 255, 0.01);
+      border: 1px solid transparent;
+    }
+
+    .day-cell:hover:not(.empty-cell) {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(255, 255, 255, 0.1);
+    }
+
+    .empty-cell {
+      background: transparent;
+      cursor: default;
+    }
+
+    .today-cell {
+      background: rgba(139, 92, 246, 0.15) !important;
+      border-color: rgba(139, 92, 246, 0.4) !important;
+      color: var(--text-primary);
+      font-weight: 700;
+    }
+
+    .selected-cell {
+      background: var(--primary-gradient) !important;
+      color: white !important;
+      box-shadow: 0 0 15px rgba(139, 92, 246, 0.4);
+      font-weight: 600;
+    }
+
+    /* Event markers/dots below numbers */
+    .dots-container {
+      display: flex;
+      gap: 3px;
+      position: absolute;
+      bottom: 4px;
+      justify-content: center;
+    }
+
+    .dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+    }
+
+    .dot-class { background-color: var(--color-class); }
+    .dot-activity { background-color: var(--color-activity); }
+    .dot-holiday { background-color: var(--color-holiday); }
+
+    /* Detail sheet */
+    .detail-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      backdrop-filter: blur(12px);
+      padding: 1.5rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+
+    .detail-title {
+      font-family: var(--font-title);
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 1rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      padding-bottom: 0.5rem;
+    }
+
+    .timeline-container {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .timeline-item {
+      display: flex;
+      gap: 1rem;
+      padding: 0.75rem;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--card-border);
+    }
+
+    .time-slot {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      min-width: 75px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .event-info {
+      flex: 1;
+    }
+
+    .event-name {
+      font-size: 0.9rem;
+      font-weight: 500;
+      margin-bottom: 2px;
+    }
+
+    .event-meta {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    /* Color strips on items */
+    .strip-class { border-left: 3px solid var(--color-class); }
+    .strip-activity { border-left: 3px solid var(--color-activity); }
+    .strip-holiday { border-left: 3px solid var(--color-holiday); }
+
+    /* Legend */
+    .legend-container {
+      display: flex;
+      justify-content: center;
+      gap: 1.25rem;
+      margin-bottom: 1.5rem;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* Screen overlays */
+    .overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--bg-main);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 2rem;
+      text-align: center;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .loader {
+      border: 3px solid rgba(255, 255, 255, 0.05);
+      border-radius: 50%;
+      border-top: 3px solid #8b5cf6;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin-bottom: 1.5rem;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .no-events-text {
+      text-align: center;
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      padding: 2rem 0;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Ambient Glow -->
+  <div class="bg-glow bg-glow-1"></div>
+  <div class="bg-glow bg-glow-2"></div>
+  <div class="bg-glow bg-glow-3"></div>
+
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay" class="overlay">
+    <div class="loader"></div>
+    <h3 style="font-family: var(--font-title); margin-bottom: 0.5rem;">Connecting to XLRI ERP...</h3>
+    <p style="color: var(--text-secondary); font-size: 0.85rem;">Retrieving your personalized academic schedule.</p>
+  </div>
+
+  <!-- Error Overlay -->
+  <div id="errorOverlay" class="overlay hidden">
+    <div style="font-size: 3rem; margin-bottom: 1rem;">⚠️</div>
+    <h3 style="font-family: var(--font-title); margin-bottom: 0.75rem;" id="errorTitle">Access Denied</h3>
+    <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1.5rem; max-width: 400px;" id="errorDesc">
+      Could not find a registered account linked to this Telegram profile. Please complete the registration inside the bot chat.
+    </p>
+    <button class="btn btn-primary" onclick="Telegram.WebApp.close()" style="width: auto; padding: 0.75rem 2rem;">Close WebApp</button>
+  </div>
+
+  <!-- Main WebApp Container -->
+  <div class="container" style="padding-top: 1rem; padding-bottom: 1rem;">
+    
+    <!-- Profile Info Header -->
+    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 1rem; padding: 0.5rem 0.25rem;">
+      <div id="userAvatar" style="width: 36px; height: 36px; border-radius: 50%; background: var(--primary-gradient); display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.95rem; color: white;">
+        U
+      </div>
+      <div>
+        <h4 id="userName" style="font-size: 0.9rem; font-weight: 600;">Student Name</h4>
+        <p id="userEmail" style="font-size: 0.75rem; color: var(--text-secondary);">student@xlri.ac.in</p>
+      </div>
+    </div>
+
+    <!-- Monthly Calendar Card -->
+    <div class="calendar-container">
+      
+      <!-- Top controls -->
+      <div class="calendar-header">
+        <button class="nav-btn" id="prevMonthBtn">◀</button>
+        <h2 id="currentMonthYear">June 2026</h2>
+        <button class="nav-btn" id="nextMonthBtn">▶</button>
+      </div>
+
+      <!-- Weekdays label row -->
+      <div class="weekdays-grid">
+        <div>M</div>
+        <div>T</div>
+        <div>W</div>
+        <div>T</div>
+        <div>F</div>
+        <div>S</div>
+        <div>S</div>
+      </div>
+
+      <!-- Days Grid -->
+      <div class="days-grid" id="daysGrid">
+        <!-- Cells generated dynamically -->
+      </div>
+    </div>
+
+    <!-- Legend row -->
+    <div class="legend-container">
+      <div class="legend-item">
+        <div class="dot dot-class"></div>
+        <span>Classes</span>
+      </div>
+      <div class="legend-item">
+        <div class="dot dot-activity"></div>
+        <span>Quizzes/Activities</span>
+      </div>
+      <div class="legend-item">
+        <div class="dot dot-holiday"></div>
+        <span>Holidays</span>
+      </div>
+    </div>
+
+    <!-- Day Details Sheet -->
+    <div class="detail-card">
+      <h3 class="detail-title" id="selectedDateLabel">Selected Date Details</h3>
+      
+      <!-- Timeline list -->
+      <div class="timeline-container" id="timelineContainer">
+        <!-- Events rendered dynamically -->
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Client JavaScript -->
+  <script src="calendar.js"></script>
+</body>
+</html>

@@ -6,6 +6,7 @@ const path = require('path');
 const { generateICS } = require('./ics-generator');
 const { initBot } = require('./bot');
 const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses } = require('./erp-client');
+const { getUser } = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -238,6 +239,83 @@ app.post('/api/save-sections', async (req, res) => {
     });
   } catch (err) {
     console.error(`[Sections] Error saving sections for ${email}: ${err.message}`);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 4. Fetch schedule by Telegram chatId
+ * Example: GET /api/telegram-schedule?chatId=12345678
+ */
+app.get('/api/telegram-schedule', async (req, res) => {
+  const { chatId } = req.query;
+
+  if (!chatId) {
+    return res.status(400).json({ error: 'Missing chatId query parameter.' });
+  }
+
+  try {
+    const user = await getUser(chatId);
+    if (!user) {
+      return res.status(404).json({ error: 'User registration not found. Please register in the Telegram bot using /login.' });
+    }
+
+    const cache = readCache();
+    let cachedData = cache[user.email.toLowerCase()];
+    const now = Date.now();
+    const cacheDuration = 5 * 60 * 1000; // Cache for 5 minutes
+
+    // If cache is stale or missing, refresh from ERP
+    if (!cachedData || (now - cachedData.cachedAt >= cacheDuration)) {
+      console.log(`[API] Refreshing ERP cache for chatId: ${chatId} (${user.email})`);
+      try {
+        const data = await fetchXLRIERPData(user.email, user.password);
+        cachedData = {
+          cachedAt: now,
+          sessions: data.sessions,
+          activities: data.activities,
+          holidays: data.holidays,
+          profile: data.profile,
+          courses: data.courses,
+          sections: user.sections // Use sections from DB
+        };
+        // Generate temporary ICS content for the cache file helper
+        cachedData.icsContent = '';
+        cache[user.email.toLowerCase()] = cachedData;
+        writeCache(cache);
+      } catch (err) {
+        console.error(`[API] ERP connection error during background refresh for ${user.email}: ${err.message}`);
+        // If cache exists, fall back to stale cache
+        if (!cachedData) {
+          return res.status(500).json({ error: `Failed to fetch data from XLRI ERP: ${err.message}` });
+        }
+      }
+    }
+
+    // Filter sessions & activities using user's section choices
+    const activeCourseOfferIds = new Set(cachedData.courses.map(c => c.id));
+    const filteredSessions = cachedData.sessions.filter(s => {
+      if (!s.courseOfferId) return true;
+      if (!activeCourseOfferIds.has(s.courseOfferId)) return false;
+      return sessionMatchesSection(s, user.sections);
+    });
+
+    const filteredActivities = cachedData.activities.filter(act => {
+      return activityMatchesCourses(act, cachedData.courses);
+    });
+
+    return res.json({
+      success: true,
+      profile: cachedData.profile,
+      courses: cachedData.courses,
+      sections: user.sections,
+      sessions: filteredSessions,
+      activities: filteredActivities,
+      holidays: cachedData.holidays
+    });
+
+  } catch (err) {
+    console.error(`[API] Error fetching Telegram schedule for chatId ${chatId}: ${err.message}`);
     return res.status(500).json({ error: err.message });
   }
 });

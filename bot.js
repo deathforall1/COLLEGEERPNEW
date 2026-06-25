@@ -5,6 +5,7 @@ const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses } = requ
 const { initScheduler } = require('./scheduler');
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000';
 
 // Candidate paths for discovery
 const MENU_CANDIDATES = [
@@ -116,7 +117,7 @@ function initBot() {
   // /start command
   bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-    const greeting = `👋 *Welcome to the XLRI ERP Bot!*\n\nI can automatically send your schedule every night and help you query your classes, quizzes, mess menu, and grades directly in Telegram.\n\n🔑 *Get Started:*\nTo link your XLRI account, use the login command:\n\`/login your_email@astra.xlri.ac.in your_password\`\n\n⚙️ *Available Commands:*\n• /schedule - Fetch today and tomorrow's classes\n• /activities - List quizzes/activities for the next 7 days\n• /sections - Select your course sections\n• /mess\\_menu - View today's mess menu (Provisional)\n• /grades - View your grades and CGPA (Provisional)\n• /logout - Permanent deletion of your credentials\n\n_Note: Credentials are stored locally on our Render server using AES-256 encryption._`;
+    const greeting = `👋 *Welcome to the XLRI ERP Bot!*\n\nI can automatically send your schedule every night and help you query your classes, quizzes, mess menu, and grades directly in Telegram.\n\n🔑 *Get Started:*\nTo link your XLRI account, use the login command:\n\`/login your_email@astra.xlri.ac.in your_password\`\n\n⚙️ *Available Commands:*\n• /schedule - Fetch today and tomorrow's classes\n• /activities - List quizzes/activities for the next 7 days\n• /calendar - Open the interactive monthly calendar WebApp\n• /sections - Select your course sections\n• /mess\\_menu - View today's mess menu (Provisional)\n• /grades - View your grades and CGPA (Provisional)\n• /logout - Permanent deletion of your credentials\n\n_Note: Credentials are stored locally on our Render server using AES-256 encryption._`;
     bot.sendMessage(chatId, greeting, { parse_mode: 'Markdown' });
   });
 
@@ -356,6 +357,29 @@ function initBot() {
     } catch (err) {
       bot.editMessageText(`❌ Failed to fetch activities: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
     }
+  });
+
+  // /calendar command
+  bot.onText(/\/calendar/, async (msg) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    const webappUrl = `${WEBAPP_URL}/calendar.html`;
+    
+    bot.sendMessage(chatId, `📅 *Interactive Calendar View*\n\nOpen your personal XLRI monthly calendar directly inside Telegram to see your classes, quizzes, and holidays.`, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '📅 Open Calendar', web_app: { url: webappUrl } }
+          ]
+        ]
+      }
+    });
   });
 
   // /mess_menu command (Provisional discovery)
