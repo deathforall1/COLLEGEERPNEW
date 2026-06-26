@@ -1,20 +1,33 @@
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
+const { Pool } = require('pg');
 
 const DB_FILE = path.join(__dirname, 'users.json');
+const DATABASE_URL = process.env.DATABASE_URL;
+
+let pool = null;
+if (DATABASE_URL) {
+  console.log('[DB] DATABASE_URL detected. Configuring PostgreSQL connection pool.');
+  pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false // Required for Render/Supabase connection
+    }
+  });
+} else {
+  console.log('[DB] No DATABASE_URL detected. Falling back to local users.json.');
+}
 
 // Encryption settings
 const ALGORITHM = 'aes-256-cbc';
-// Ensure ENCRYPTION_KEY is 32 bytes and ENCRYPTION_IV is 16 bytes.
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY 
   ? crypto.scryptSync(process.env.ENCRYPTION_KEY, 'salt', 32)
-  : Buffer.from('f98c76dae4b3c2d1e0f98c76dae4b3c2', 'utf-8'); // 32-byte fallback
+  : Buffer.from('f98c76dae4b3c2d1e0f98c76dae4b3c2', 'utf-8');
 const ENCRYPTION_IV = process.env.ENCRYPTION_IV
   ? crypto.scryptSync(process.env.ENCRYPTION_IV, 'salt', 16)
-  : Buffer.from('e0f98c76dae4b3c2', 'utf-8'); // 16-byte fallback
+  : Buffer.from('e0f98c76dae4b3c2', 'utf-8');
 
-// Helpers for encryption
 function encrypt(text) {
   if (!text) return '';
   const cipher = crypto.createCipheriv(ALGORITHM, ENCRYPTION_KEY, ENCRYPTION_IV);
@@ -36,7 +49,7 @@ function decrypt(text) {
   }
 }
 
-// Read database from file
+// Local JSON File operations
 function readData() {
   try {
     if (fs.existsSync(DB_FILE)) {
@@ -49,7 +62,6 @@ function readData() {
   return {};
 }
 
-// Write database to file
 function writeData(data) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
@@ -58,90 +70,147 @@ function writeData(data) {
   }
 }
 
-// Initialize database schema (placeholder for compatibility)
-function initDatabase() {
-  return new Promise((resolve) => {
+// Initialize database schema
+async function initDatabase() {
+  if (pool) {
+    const query = `
+      CREATE TABLE IF NOT EXISTS users (
+        chat_id BIGINT PRIMARY KEY,
+        email VARCHAR(255) NOT NULL,
+        password TEXT NOT NULL,
+        sections TEXT NOT NULL DEFAULT '{}',
+        registered_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    await pool.query(query);
+    console.log('[DB] PostgreSQL database tables initialized successfully.');
+  } else {
     if (!fs.existsSync(DB_FILE)) {
       writeData({});
     }
     console.log('[DB] JSON database initialized successfully.');
-    resolve();
-  });
+  }
 }
 
 // DB Operations
-function saveUser(chatId, email, password) {
-  return new Promise((resolve) => {
-    const dbData = readData();
-    const encryptedPassword = encrypt(password);
+async function saveUser(chatId, email, password) {
+  const encryptedPassword = encrypt(password);
+  const normalizedEmail = email.toLowerCase().trim();
+  
+  if (pool) {
+    const query = `
+      INSERT INTO users (chat_id, email, password, sections)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (chat_id)
+      DO UPDATE SET email = EXCLUDED.email, password = EXCLUDED.password;
+    `;
+    // Fetch sections if they already exist to preserve them
+    const existing = await getUser(chatId);
+    const sections = existing ? JSON.stringify(existing.sections) : '{}';
     
+    await pool.query(query, [chatId, normalizedEmail, encryptedPassword, sections]);
+    return { chatId, email: normalizedEmail };
+  } else {
+    const dbData = readData();
     dbData[chatId] = {
       chat_id: Number(chatId),
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       password: encryptedPassword,
-      sections: dbData[chatId]?.sections || '{}', // Keep sections if updating user
+      sections: dbData[chatId]?.sections || '{}',
       registered_at: dbData[chatId]?.registered_at || new Date().toISOString()
     };
-    
     writeData(dbData);
-    resolve({ chatId, email });
-  });
+    return { chatId, email: normalizedEmail };
+  }
 }
 
-function saveUserSections(chatId, sections) {
-  return new Promise((resolve, reject) => {
+async function saveUserSections(chatId, sections) {
+  if (pool) {
+    const query = `UPDATE users SET sections = $2 WHERE chat_id = $1;`;
+    const res = await pool.query(query, [chatId, JSON.stringify(sections)]);
+    if (res.rowCount === 0) {
+      throw new Error('User not found.');
+    }
+  } else {
     const dbData = readData();
     if (!dbData[chatId]) {
-      return reject(new Error('User not found.'));
+      throw new Error('User not found.');
     }
     dbData[chatId].sections = JSON.stringify(sections);
     writeData(dbData);
-    resolve();
-  });
+  }
 }
 
-function getUser(chatId) {
-  return new Promise((resolve) => {
+async function getUser(chatId) {
+  if (pool) {
+    const query = `SELECT * FROM users WHERE chat_id = $1;`;
+    const res = await pool.query(query, [chatId]);
+    if (res.rows.length === 0) return null;
+    const row = res.rows[0];
+    return {
+      chatId: Number(row.chat_id),
+      email: row.email,
+      password: decrypt(row.password),
+      sections: JSON.parse(row.sections || '{}'),
+      registeredAt: row.registered_at
+    };
+  } else {
     const dbData = readData();
     const row = dbData[chatId];
-    if (!row) {
-      resolve(null);
-    } else {
-      resolve({
-        chatId: row.chat_id,
-        email: row.email,
-        password: decrypt(row.password),
-        sections: JSON.parse(row.sections || '{}'),
-        registeredAt: row.registered_at
-      });
-    }
-  });
+    if (!row) return null;
+    return {
+      chatId: row.chat_id,
+      email: row.email,
+      password: decrypt(row.password),
+      sections: JSON.parse(row.sections || '{}'),
+      registeredAt: row.registered_at
+    };
+  }
 }
 
-function getUserByEmail(email) {
-  return new Promise((resolve) => {
+async function getUserByEmail(email) {
+  const normalizedEmail = email.toLowerCase().trim();
+  if (pool) {
+    const query = `SELECT * FROM users WHERE email = $1;`;
+    const res = await pool.query(query, [normalizedEmail]);
+    if (res.rows.length === 0) return null;
+    const row = res.rows[0];
+    return {
+      chatId: Number(row.chat_id),
+      email: row.email,
+      password: decrypt(row.password),
+      sections: JSON.parse(row.sections || '{}'),
+      registeredAt: row.registered_at
+    };
+  } else {
     const dbData = readData();
-    const foundKey = Object.keys(dbData).find(key => dbData[key].email === email.toLowerCase());
+    const foundKey = Object.keys(dbData).find(key => dbData[key].email === normalizedEmail);
     const row = foundKey ? dbData[foundKey] : null;
-    
-    if (!row) {
-      resolve(null);
-    } else {
-      resolve({
-        chatId: row.chat_id,
-        email: row.email,
-        password: decrypt(row.password),
-        sections: JSON.parse(row.sections || '{}'),
-        registeredAt: row.registered_at
-      });
-    }
-  });
+    if (!row) return null;
+    return {
+      chatId: row.chat_id,
+      email: row.email,
+      password: decrypt(row.password),
+      sections: JSON.parse(row.sections || '{}'),
+      registeredAt: row.registered_at
+    };
+  }
 }
 
-function getAllUsers() {
-  return new Promise((resolve) => {
+async function getAllUsers() {
+  if (pool) {
+    const query = `SELECT * FROM users;`;
+    const res = await pool.query(query);
+    return res.rows.map(row => ({
+      chatId: Number(row.chat_id),
+      email: row.email,
+      password: decrypt(row.password),
+      sections: JSON.parse(row.sections || '{}'),
+      registeredAt: row.registered_at
+    }));
+  } else {
     const dbData = readData();
-    const users = Object.keys(dbData).map(key => {
+    return Object.keys(dbData).map(key => {
       const row = dbData[key];
       return {
         chatId: row.chat_id,
@@ -151,21 +220,23 @@ function getAllUsers() {
         registeredAt: row.registered_at
       };
     });
-    resolve(users);
-  });
+  }
 }
 
-function deleteUser(chatId) {
-  return new Promise((resolve) => {
+async function deleteUser(chatId) {
+  if (pool) {
+    const query = `DELETE FROM users WHERE chat_id = $1;`;
+    const res = await pool.query(query, [chatId]);
+    return res.rowCount > 0;
+  } else {
     const dbData = readData();
     if (dbData[chatId]) {
       delete dbData[chatId];
       writeData(dbData);
-      resolve(true);
-    } else {
-      resolve(false);
+      return true;
     }
-  });
+    return false;
+  }
 }
 
 module.exports = {

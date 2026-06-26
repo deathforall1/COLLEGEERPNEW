@@ -113,6 +113,23 @@ function initBot() {
   const bot = new TelegramBot(TOKEN, { polling: true });
   console.log('[Bot] Telegram Bot listener initialized successfully.');
 
+  // Register commands for autocomplete / menu list
+  bot.setMyCommands([
+    { command: 'start', description: 'Welcome message and bot overview' },
+    { command: 'login', description: 'Link XLRI credentials: /login email password' },
+    { command: 'schedule', description: 'Show today and tomorrow\'s classes' },
+    { command: 'activities', description: 'Show academic activities for next 7 days' },
+    { command: 'sections', description: 'Select sections for your registered courses' },
+    { command: 'mess_menu', description: 'View mess menu (e.g. /mess_menu tomorrow)' },
+    { command: 'grades', description: 'View grades and CGPA summary' },
+    { command: 'calendar', description: 'Open interactive calendar WebApp' },
+    { command: 'logout', description: 'Delete your credentials and logout' }
+  ]).then(() => {
+    console.log('[Bot] Autocomplete commands registered successfully with Telegram.');
+  }).catch(err => {
+    console.error('[Bot] Failed to register autocomplete commands:', err.message);
+  });
+
   // Initialize DB and Scheduler
   initDatabase().then(() => {
     initScheduler(bot);
