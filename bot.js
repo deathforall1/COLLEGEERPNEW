@@ -113,6 +113,16 @@ function initBot() {
   const bot = new TelegramBot(TOKEN, { polling: true });
   console.log('[Bot] Telegram Bot listener initialized successfully.');
 
+  // Handle polling errors gracefully to avoid flooding logs with temporary gateway issues
+  bot.on('polling_error', (error) => {
+    const msg = error.message || '';
+    if (msg.includes('502 Bad Gateway') || msg.includes('504 Gateway Timeout') || msg.includes('ETIMEDOUT') || msg.includes('EFIMEOUT')) {
+      // Ignore temporary connection timeouts and gateway errors
+      return;
+    }
+    console.warn('[Bot] Telegram Polling Warning:', msg || error);
+  });
+
   // Register commands for autocomplete / menu list
   bot.setMyCommands([
     { command: 'start', description: 'Welcome message and bot overview' },
