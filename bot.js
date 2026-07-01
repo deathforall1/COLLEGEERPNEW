@@ -468,7 +468,7 @@ function initBot() {
   });
 
   // /schedule command
-  bot.onText(/\/schedule/, async (msg) => {
+  bot.onText(/\/schedule(?:\s+(\d+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const user = await getUser(chatId);
 
@@ -476,7 +476,10 @@ function initBot() {
       return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
     }
 
-    const loadingMsg = await bot.sendMessage(chatId, `📅 *Fetching schedule...*`, { parse_mode: 'Markdown' });
+    const numDaysArg = match[1] ? parseInt(match[1], 10) : null;
+    const limit = numDaysArg !== null ? Math.min(Math.max(numDaysArg, 1), 14) : 2;
+
+    const loadingMsg = await bot.sendMessage(chatId, `📅 *Fetching schedule for next ${limit} days...*`, { parse_mode: 'Markdown' });
 
     try {
       const [data, sessionNotes] = await Promise.all([
@@ -486,11 +489,6 @@ function initBot() {
       
       const tzOffset = 5.5 * 60 * 60 * 1000;
       const todayIST = new Date(Date.now() + tzOffset);
-      const tomorrowIST = new Date(todayIST.getTime() + 24 * 60 * 60 * 1000);
-      
-      const todayStr = formatDate(todayIST);
-      const tomorrowStr = formatDate(tomorrowIST);
-      
       const activeCourseOfferIds = new Set(data.courses.map(c => c.id));
       
       const getScheduleForDate = (dateStr) => {
@@ -504,52 +502,48 @@ function initBot() {
           .sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
       };
 
-      const todaySessions = getScheduleForDate(todayStr);
-      const tomorrowSessions = getScheduleForDate(tomorrowStr);
+      const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      let response = `📅 *Your XLRI Timetable (${limit} Day${limit > 1 ? 's' : ''})*\n\n`;
 
-      let response = `📅 *Your XLRI Timetable*\n\n`;
-      
-      // Today
-      response += `*Today (${todayStr})*:\n`;
-      if (todaySessions.length === 0) {
-        response += `🎉 No classes scheduled!\n\n`;
-      } else {
-        todaySessions.forEach(s => {
-          const start = (s.startTime || '').slice(0, 5);
-          const end = (s.endTime || '').slice(0, 5);
-          const name = s.course?.courseName || 'Class';
-          const cancel = s.status === 'cancelled' ? '❌ *CANCELLED* ' : '';
-          const venue = s.venue?.name ? ` @ ${s.venue.name}` : '';
-          
-          let item = `• *${start}-${end}*: ${cancel}${name}${venue}`;
-          const sessionId = s.sessionId || `session-${s.classDate}-${s.startTime}`;
-          if (sessionNotes && sessionNotes[sessionId]) {
-            item += `\n  📌 *Note:* _${sessionNotes[sessionId]}_`;
-          }
-          response += item + `\n`;
-        });
-        response += `\n`;
+      for (let i = 0; i < limit; i++) {
+        const targetDate = new Date(todayIST.getTime() + i * 24 * 60 * 60 * 1000);
+        const dateStr = formatDate(targetDate);
+        const sessions = getScheduleForDate(dateStr);
+        
+        let label = '';
+        if (i === 0) {
+          label = `Today (${dateStr})`;
+        } else if (i === 1) {
+          label = `Tomorrow (${dateStr})`;
+        } else {
+          label = `${daysOfWeek[targetDate.getUTCDay()]} (${dateStr})`;
+        }
+
+        response += `*${label}*:\n`;
+
+        if (sessions.length === 0) {
+          response += `🎉 No classes scheduled!\n\n`;
+        } else {
+          sessions.forEach(s => {
+            const start = (s.startTime || '').slice(0, 5);
+            const end = (s.endTime || '').slice(0, 5);
+            const name = s.course?.courseName || 'Class';
+            const cancel = s.status === 'cancelled' ? '❌ *CANCELLED* ' : '';
+            const venue = s.venue?.name ? ` @ ${s.venue.name}` : '';
+            
+            let item = `• *${start}-${end}*: ${cancel}${name}${venue}`;
+            const sessionId = s.sessionId || `session-${s.classDate}-${s.startTime}`;
+            if (sessionNotes && sessionNotes[sessionId]) {
+              item += `\n  📌 *Note:* _${sessionNotes[sessionId]}_`;
+            }
+            response += item + `\n`;
+          });
+          response += `\n`;
+        }
       }
-      
-      // Tomorrow
-      response += `*Tomorrow (${tomorrowStr})*:\n`;
-      if (tomorrowSessions.length === 0) {
-        response += `🎉 No classes scheduled!\n`;
-      } else {
-        tomorrowSessions.forEach(s => {
-          const start = (s.startTime || '').slice(0, 5);
-          const end = (s.endTime || '').slice(0, 5);
-          const name = s.course?.courseName || 'Class';
-          const cancel = s.status === 'cancelled' ? '❌ *CANCELLED* ' : '';
-          const venue = s.venue?.name ? ` @ ${s.venue.name}` : '';
-          
-          let item = `• *${start}-${end}*: ${cancel}${name}${venue}`;
-          const sessionId = s.sessionId || `session-${s.classDate}-${s.startTime}`;
-          if (sessionNotes && sessionNotes[sessionId]) {
-            item += `\n  📌 *Note:* _${sessionNotes[sessionId]}_`;
-          }
-          response += item + `\n`;
-        });
+
+      if (response.length > 4000) {
+        response = response.slice(0, 4000) + '\n\n_(Truncated due to Telegram message length limits)_';
       }
 
       bot.editMessageText(response, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
