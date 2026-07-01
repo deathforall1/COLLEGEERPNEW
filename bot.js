@@ -12,7 +12,10 @@ const {
   createShareRequest, 
   getShares, 
   deleteShare, 
-  areFriends 
+  areFriends,
+  saveSessionNote,
+  getSessionNotes,
+  deleteSessionNote
 } = require('./database');
 const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPMessMenu, fetchXLRIERPGrades } = require('./erp-client');
 const { initScheduler } = require('./scheduler');
