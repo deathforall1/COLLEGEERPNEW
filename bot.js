@@ -1,6 +1,19 @@
 const TelegramBot = require('node-telegram-bot-api').TelegramBot || require('node-telegram-bot-api');
 const axios = require('axios');
-const { initDatabase, saveUser, saveUserSections, getUser, deleteUser } = require('./database');
+const { 
+  initDatabase, 
+  saveUser, 
+  saveUserSections, 
+  getUser, 
+  deleteUser, 
+  getAllUsers, 
+  getUserByEmail, 
+  saveUserScheduleState, 
+  createShareRequest, 
+  getShares, 
+  deleteShare, 
+  areFriends 
+} = require('./database');
 const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPMessMenu, fetchXLRIERPGrades } = require('./erp-client');
 const { initScheduler } = require('./scheduler');
 
@@ -42,6 +55,72 @@ const GRADES_CANDIDATES = [
 // Helper to format date into YYYY-MM-DD
 function formatDate(date) {
   return date.toISOString().slice(0, 10);
+}
+
+// Helper to calculate free intervals shared between two students
+function calculateCommonFreeSlots(sessionsA, sessionsB, dateStr) {
+  const startLimit = 8 * 60; // 08:00 AM
+  const endLimit = 21 * 60;  // 09:00 PM
+  
+  // Timeline: 0 to 1440 minutes, initialized to true (free)
+  const timeline = new Array(1440).fill(true);
+  
+  const parseTimeToMins = (timeStr) => {
+    if (!timeStr) return null;
+    const parts = timeStr.split(':');
+    return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+  };
+  
+  const markBusy = (sessions) => {
+    sessions.forEach(s => {
+      if (s.classDate === dateStr && s.status !== 'cancelled') {
+        const start = parseTimeToMins(s.startTime);
+        const end = parseTimeToMins(s.endTime);
+        if (start !== null && end !== null) {
+          for (let m = start; m < end; m++) {
+            timeline[m] = false;
+          }
+        }
+      }
+    });
+  };
+  
+  markBusy(sessionsA);
+  markBusy(sessionsB);
+  
+  const freeIntervals = [];
+  let inInterval = false;
+  let startOfInterval = null;
+  
+  for (let m = startLimit; m <= endLimit; m++) {
+    const isFree = timeline[m];
+    if (isFree && !inInterval) {
+      inInterval = true;
+      startOfInterval = m;
+    } else if (!isFree && inInterval) {
+      inInterval = false;
+      const endOfInterval = m;
+      if (endOfInterval - startOfInterval >= 30) {
+        freeIntervals.push({ start: startOfInterval, end: endOfInterval });
+      }
+    }
+  }
+  
+  if (inInterval) {
+    if (endLimit - startOfInterval >= 30) {
+      freeIntervals.push({ start: startOfInterval, end: endLimit });
+    }
+  }
+  
+  const formatTime = (mins) => {
+    const hh = String(Math.floor(mins / 60)).padStart(2, '0');
+    const mm = String(mins % 60).padStart(2, '0');
+    return `${hh}:${mm}`;
+  };
+  
+  return freeIntervals.map(interval => {
+    return `${formatTime(interval.start)} - ${formatTime(interval.end)}`;
+  });
 }
 
 // Probing helper for unverified ERP endpoints
@@ -130,6 +209,10 @@ function initBot() {
     { command: 'schedule', description: 'Show today and tomorrow\'s classes' },
     { command: 'activities', description: 'Show academic activities for next 7 days' },
     { command: 'sections', description: 'Select sections for your registered courses' },
+    { command: 'share', description: 'Share calendar with a classmate' },
+    { command: 'unshare', description: 'Stop calendar sharing with a classmate' },
+    { command: 'friends', description: 'Check shared calendars & free slots' },
+    { command: 'note', description: 'Add reminder for next class: /note text' },
     { command: 'mess_menu', description: 'View mess menu (e.g. /mess_menu tomorrow)' },
     { command: 'grades', description: 'View grades and CGPA summary' },
     { command: 'calendar', description: 'Open interactive calendar WebApp' },
@@ -150,7 +233,7 @@ function initBot() {
   // /start command
   bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-    const greeting = `👋 *Welcome to the XLRI ERP Bot!*\n\nI can automatically send your schedule every night and help you query your classes, quizzes, mess menu, and grades directly in Telegram.\n\n🔑 *Get Started:*\nTo link your XLRI account, use the login command:\n\`/login your_email@astra.xlri.ac.in your_password\`\n\n⚙️ *Available Commands:*\n• /schedule - Fetch today and tomorrow's classes\n• /activities - List quizzes/activities for the next 7 days\n• /calendar - Open the interactive monthly calendar WebApp\n• /sections - Select your course sections\n• /mess\\_menu - View today's mess menu (Provisional)\n• /grades - View your grades and CGPA (Provisional)\n• /logout - Permanent deletion of your credentials\n\n_Note: Credentials are stored locally on our Render server using AES-256 encryption._`;
+    const greeting = `👋 *Welcome to the XLRI ERP Bot!*\n\nI can automatically send your schedule every night and help you query your classes, quizzes, mess menu, and grades directly in Telegram.\n\n🔑 *Get Started:*\nTo link your XLRI account, use the login command:\n\`/login your_email@astra.xlri.ac.in your_password\`\n\n⚙️ *Available Commands:*\n• /schedule - Fetch today and tomorrow's classes\n• /activities - List quizzes/activities for the next 7 days\n• /calendar - Open the interactive monthly calendar WebApp\n• /sections - Select your course sections\n• /share - Share calendar with a classmate\n• /unshare - Stop calendar sharing with a classmate\n• /friends - View linked friends and check common free slots\n• /mess\\_menu - View today's mess menu\n• /grades - View your grades and CGPA\n• /logout - Permanent deletion of your credentials\n\n_Note: Credentials are stored securely and encrypted on disk using AES-256._`;
     bot.sendMessage(chatId, greeting, { parse_mode: 'Markdown' });
   });
 
@@ -239,33 +322,148 @@ function initBot() {
   // Inline buttons callback handler
   bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
-    const data = query.data; // Format: sec_courseOfferId_sectionLetter
+    const data = query.data;
     
-    if (!data.startsWith('sec_')) return;
-    
-    const parts = data.split('_');
-    const courseOfferId = parts[1];
-    const sectionLetter = parts[2] || ''; // Empty string if 'None'
-    
-    const user = await getUser(chatId);
-    if (!user) {
-      return bot.answerCallbackQuery(query.id, { text: 'Session expired. Please log in again.', show_alert: true });
+    // 1. Sections Configuration Callback
+    if (data.startsWith('sec_')) {
+      const parts = data.split('_');
+      const courseOfferId = parts[1];
+      const sectionLetter = parts[2] || ''; // Empty string if 'None'
+      
+      const user = await getUser(chatId);
+      if (!user) {
+        return bot.answerCallbackQuery(query.id, { text: 'Session expired. Please log in again.', show_alert: true });
+      }
+      
+      // Update section preference in database
+      user.sections[courseOfferId] = sectionLetter;
+      await saveUserSections(chatId, user.sections);
+      
+      // Reset schedule state to baseline so they don't get false alerts on next cron check
+      await saveUserScheduleState(chatId, '{}');
+      
+      // Edit the keyboard markup to reflect selection
+      try {
+        await bot.editMessageReplyMarkup(
+          getSectionKeyboard(courseOfferId, sectionLetter),
+          { chat_id: chatId, message_id: query.message.message_id }
+        );
+        bot.answerCallbackQuery(query.id, { text: `Section set to ${sectionLetter || 'None'}!` });
+      } catch (err) {
+        console.error('[Bot] Failed to edit callback markup:', err.message);
+        bot.answerCallbackQuery(query.id, { text: 'Section saved successfully!' });
+      }
+      return;
     }
-    
-    // Update section preference in database
-    user.sections[courseOfferId] = sectionLetter;
-    await saveUserSections(chatId, user.sections);
-    
-    // Edit the keyboard markup to reflect selection
-    try {
-      await bot.editMessageReplyMarkup(
-        getSectionKeyboard(courseOfferId, sectionLetter),
-        { chat_id: chatId, message_id: query.message.message_id }
-      );
-      bot.answerCallbackQuery(query.id, { text: `Section set to ${sectionLetter || 'None'}!` });
-    } catch (err) {
-      console.error('[Bot] Failed to edit callback markup:', err.message);
-      bot.answerCallbackQuery(query.id, { text: 'Section saved successfully!' });
+
+    // 2. Unshare Callback
+    if (data.startsWith('unsh_')) {
+      const friendId = data.split('_')[1];
+      const user = await getUser(chatId);
+      if (!user) return bot.answerCallbackQuery(query.id, { text: 'Session expired. Please log in again.' });
+      
+      const friend = await getUser(friendId);
+      await deleteShare(chatId, friendId);
+      
+      await bot.deleteMessage(chatId, query.message.message_id);
+      bot.sendMessage(chatId, `✅ Stopped sharing calendar with *${friend?.email || 'classmate'}*.`, { parse_mode: 'Markdown' });
+      if (friend) {
+        bot.sendMessage(friend.chatId, `⚠️ *Calendar Sharing Stopped.*\n**${user.email}** has stopped sharing their calendar with you.`, { parse_mode: 'Markdown' });
+      }
+      return bot.answerCallbackQuery(query.id, { text: 'Sharing revoked successfully.' });
+    }
+
+    // 3. Accept Share Callback
+    if (data.startsWith('acc_')) {
+      const friendId = data.split('_')[1];
+      const user = await getUser(chatId);
+      if (!user) return bot.answerCallbackQuery(query.id, { text: 'Session expired.' });
+      
+      const friend = await getUser(friendId);
+      if (!friend) return bot.answerCallbackQuery(query.id, { text: 'Friend not found.' });
+
+      await createShareRequest(chatId, friendId);
+      await bot.deleteMessage(chatId, query.message.message_id);
+      
+      bot.sendMessage(chatId, `✅ *Calendar Sharing Linked!*\nYou and *${friend.email}* are mutually sharing calendars now.`, { parse_mode: 'Markdown' });
+      bot.sendMessage(friend.chatId, `🔔 *Calendar Sharing Linked!*\n**${user.email}** accepted your share request.`, { parse_mode: 'Markdown' });
+      return bot.answerCallbackQuery(query.id, { text: 'Sharing request accepted!' });
+    }
+
+    // 4. Compare Callback (Free-Busy calculation)
+    if (data.startsWith('comp_')) {
+      const parts = data.split('_');
+      const friendId = parts[1];
+      const day = parts[2]; // 'today' or 'tomorrow'
+      
+      const user = await getUser(chatId);
+      if (!user) return bot.answerCallbackQuery(query.id, { text: 'Session expired.' });
+
+      const friend = await getUser(friendId);
+      if (!friend) return bot.answerCallbackQuery(query.id, { text: 'Friend not found.' });
+
+      const friends = await areFriends(chatId, friendId);
+      if (!friends) {
+        return bot.answerCallbackQuery(query.id, { text: 'You must be mutual friends to compare calendars.', show_alert: true });
+      }
+
+      await bot.answerCallbackQuery(query.id, { text: `Comparing schedules...` });
+      const compareMsg = await bot.sendMessage(chatId, `🔄 *Fetching and comparing schedules...*`, { parse_mode: 'Markdown' });
+
+      try {
+        const [userData, friendData] = await Promise.all([
+          fetchXLRIERPData(user.email, user.password),
+          fetchXLRIERPData(friend.email, friend.password)
+        ]);
+
+        const tzOffset = 5.5 * 60 * 60 * 1000;
+        const todayIST = new Date(Date.now() + tzOffset);
+        let targetDate = todayIST;
+        let label = 'Today';
+
+        if (day === 'tomorrow') {
+          targetDate = new Date(todayIST.getTime() + 24 * 60 * 60 * 1000);
+          label = 'Tomorrow';
+        }
+        
+        const dateStr = formatDate(targetDate);
+        
+        // Filter User Sessions
+        const activeCourseOfferIdsUser = new Set(userData.courses.map(c => c.id));
+        const filteredUserSessions = userData.sessions.filter(s => {
+          if (!s.courseOfferId) return true;
+          if (!activeCourseOfferIdsUser.has(s.courseOfferId)) return false;
+          return sessionMatchesSection(s, user.sections);
+        });
+
+        // Filter Friend Sessions
+        const activeCourseOfferIdsFriend = new Set(friendData.courses.map(c => c.id));
+        const filteredFriendSessions = friendData.sessions.filter(s => {
+          if (!s.courseOfferId) return true;
+          if (!activeCourseOfferIdsFriend.has(s.courseOfferId)) return false;
+          return sessionMatchesSection(s, friend.sections);
+        });
+
+        // Parse schedules into free slots timeline
+        const freeSlots = calculateCommonFreeSlots(filteredUserSessions, filteredFriendSessions, dateStr);
+        
+        let response = `🟢 *Common Free Slots (${label} - ${dateStr})* 🟢\n`;
+        response += `👥 Between you and *${friend.email.split('@')[0].toUpperCase()}*:\n\n`;
+        
+        if (freeSlots.length === 0) {
+          response += `⚠️ *No common free slots found* between 08:00 AM and 09:00 PM. Busy day!`;
+        } else {
+          freeSlots.forEach(slot => {
+            response += `• *${slot}*\n`;
+          });
+        }
+        
+        await bot.editMessageText(response, { chat_id: chatId, message_id: compareMsg.message_id, parse_mode: 'Markdown' });
+
+      } catch (err) {
+        await bot.editMessageText(`❌ Failed to compare calendars: ${err.message}`, { chat_id: chatId, message_id: compareMsg.message_id });
+      }
+      return;
     }
   });
 
@@ -281,7 +479,10 @@ function initBot() {
     const loadingMsg = await bot.sendMessage(chatId, `📅 *Fetching schedule...*`, { parse_mode: 'Markdown' });
 
     try {
-      const data = await fetchXLRIERPData(user.email, user.password);
+      const [data, sessionNotes] = await Promise.all([
+        fetchXLRIERPData(user.email, user.password),
+        getSessionNotes(chatId)
+      ]);
       
       const tzOffset = 5.5 * 60 * 60 * 1000;
       const todayIST = new Date(Date.now() + tzOffset);
@@ -319,7 +520,13 @@ function initBot() {
           const name = s.course?.courseName || 'Class';
           const cancel = s.status === 'cancelled' ? '❌ *CANCELLED* ' : '';
           const venue = s.venue?.name ? ` @ ${s.venue.name}` : '';
-          response += `• *${start}-${end}*: ${cancel}${name}${venue}\n`;
+          
+          let item = `• *${start}-${end}*: ${cancel}${name}${venue}`;
+          const sessionId = s.sessionId || `session-${s.classDate}-${s.startTime}`;
+          if (sessionNotes && sessionNotes[sessionId]) {
+            item += `\n  📌 *Note:* _${sessionNotes[sessionId]}_`;
+          }
+          response += item + `\n`;
         });
         response += `\n`;
       }
@@ -335,7 +542,13 @@ function initBot() {
           const name = s.course?.courseName || 'Class';
           const cancel = s.status === 'cancelled' ? '❌ *CANCELLED* ' : '';
           const venue = s.venue?.name ? ` @ ${s.venue.name}` : '';
-          response += `• *${start}-${end}*: ${cancel}${name}${venue}\n`;
+          
+          let item = `• *${start}-${end}*: ${cancel}${name}${venue}`;
+          const sessionId = s.sessionId || `session-${s.classDate}-${s.startTime}`;
+          if (sessionNotes && sessionNotes[sessionId]) {
+            item += `\n  📌 *Note:* _${sessionNotes[sessionId]}_`;
+          }
+          response += item + `\n`;
         });
       }
 
@@ -382,7 +595,13 @@ function initBot() {
         upcoming.forEach(act => {
           const timeStr = act.startTime ? ` at ${act.startTime.slice(0, 5)}` : '';
           const venueStr = act.venue?.name ? ` [📍 ${act.venue.name}]` : '';
-          response += `• *${act.date}${timeStr}*:\n  📢 *${act.name || 'Activity'}*${venueStr}\n\n`;
+          const name = act.name || 'Activity';
+          
+          const isExam = /exam|quiz|term/i.test(name);
+          const emoji = isExam ? '⚠️' : '•';
+          const styledName = isExam ? `*${name.toUpperCase()}*` : name;
+          
+          response += `${emoji} *${act.date}${timeStr}*:\n  📢 ${styledName}${venueStr}\n\n`;
         });
       }
 
@@ -555,6 +774,257 @@ function initBot() {
       }
     } catch (err) {
       bot.editMessageText(`❌ Connection error: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
+    }
+  });
+
+  // /share command
+  bot.onText(/\/share(?:\s+(.+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    if (!match[1]) {
+      return bot.sendMessage(chatId, `ℹ️ *Calendar Sharing*\nTo share your calendar with a classmate, type:\n\`/share friend_email@astra.xlri.ac.in\`\nor their Student ID (e.g. \`/share B25019\`).\n\n_Note: Sharing is mutual. Once both of you request each other, you will be able to see each other's schedules and check free/busy slots!_`, { parse_mode: 'Markdown' });
+    }
+
+    const targetInput = match[1].trim().toLowerCase();
+    
+    // Look up friend in DB by email or student ID
+    let friend = null;
+    if (targetInput.includes('@')) {
+      friend = await getUserByEmail(targetInput);
+    } else {
+      const allUsers = await getAllUsers();
+      friend = allUsers.find(u => {
+        const emailParts = u.email.split('@');
+        return emailParts[0].toLowerCase() === targetInput;
+      });
+    }
+
+    if (!friend) {
+      return bot.sendMessage(chatId, `❌ *User Not Registered.*\nWe could not find a student registered with email or ID \`${targetInput}\`.\n\nAsk them to log in to this bot first!`, { parse_mode: 'Markdown' });
+    }
+
+    if (friend.chatId === user.chatId) {
+      return bot.sendMessage(chatId, `⚠️ You cannot share your calendar with yourself!`, { parse_mode: 'Markdown' });
+    }
+
+    const loadingMsg = await bot.sendMessage(chatId, `🔄 *Processing share request...*`, { parse_mode: 'Markdown' });
+
+    try {
+      const status = await createShareRequest(chatId, friend.chatId);
+
+      if (status === 'accepted') {
+        bot.editMessageText(
+          `✅ *Calendar Sharing Linked!*\nYou and *${friend.email}* are now mutually sharing calendars.\n\nRun /friends to compare schedules or check common free slots!`,
+          { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' }
+        );
+        bot.sendMessage(
+          friend.chatId,
+          `🔔 *Calendar Sharing Linked!*\n**${user.email}** accepted your share request. You are now mutually sharing calendars.\n\nRun /friends to compare schedules or check common free slots!`,
+          { parse_mode: 'Markdown' }
+        );
+      } else {
+        bot.editMessageText(
+          `✉️ *Share Request Sent!*\nYour request has been sent to *${friend.email}*.\n\nThey must run \`/share ${user.email}\` to accept and finalize the mutual link.`,
+          { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' }
+        );
+        bot.sendMessage(
+          friend.chatId,
+          `🔔 *Calendar Share Request!*\n**${user.email}** wants to share calendars with you.\n\nTo accept and share back, run:\n\`/share ${user.email}\``,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    } catch (err) {
+      bot.editMessageText(`❌ Failed to share: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
+    }
+  });
+
+  // /unshare command
+  bot.onText(/\/unshare(?:\s+(.+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    if (!match[1]) {
+      return bot.sendMessage(chatId, `ℹ️ *Revoke Calendar Sharing*\nTo stop sharing your calendar with a classmate, type:\n\`/unshare friend_email@astra.xlri.ac.in\`\nor their Student ID (e.g. \`/unshare B25019\`).`, { parse_mode: 'Markdown' });
+    }
+
+    const targetInput = match[1].trim().toLowerCase();
+    
+    let friend = null;
+    if (targetInput.includes('@')) {
+      friend = await getUserByEmail(targetInput);
+    } else {
+      const allUsers = await getAllUsers();
+      friend = allUsers.find(u => u.email.split('@')[0].toLowerCase() === targetInput);
+    }
+
+    if (!friend) {
+      return bot.sendMessage(chatId, `❌ *User Not Found.*\nNo registered student found with email or ID \`${targetInput}\`.`, { parse_mode: 'Markdown' });
+    }
+
+    const deleted = await deleteShare(chatId, friend.chatId);
+    
+    if (deleted) {
+      bot.sendMessage(chatId, `✅ *Calendar Sharing Revoked.*\nYou stopped sharing calendars with *${friend.email}*.`, { parse_mode: 'Markdown' });
+      bot.sendMessage(friend.chatId, `⚠️ *Calendar Sharing Stopped.*\n**${user.email}** has stopped sharing their calendar with you.`, { parse_mode: 'Markdown' });
+    } else {
+      bot.sendMessage(chatId, `ℹ️ You are not sharing calendars with *${friend.email}*.`, { parse_mode: 'Markdown' });
+    }
+  });
+
+  // /friends command
+  bot.onText(/\/friends/, async (msg) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    const loadingMsg = await bot.sendMessage(chatId, `🔄 Loading sharing list...`, { parse_mode: 'Markdown' });
+
+    try {
+      const shares = await getShares(chatId);
+      
+      if (shares.length === 0) {
+        await bot.deleteMessage(chatId, loadingMsg.message_id);
+        return bot.sendMessage(
+          chatId,
+          `👥 *My Sharing Circle*\nYou are not sharing calendars with anyone yet.\n\n💡 *To get started:*\nRun \`/share friend_email@astra.xlri.ac.in\` to request mutual sharing with a classmate.`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+
+      await bot.deleteMessage(chatId, loadingMsg.message_id);
+      await bot.sendMessage(chatId, `👥 *My Calendar Sharing Circle*`);
+
+      for (const share of shares) {
+        const friendEmail = share.friendEmail;
+        const studentId = friendEmail.split('@')[0].toUpperCase();
+        
+        if (share.status === 'accepted') {
+          const inlineKeyboard = {
+            inline_keyboard: [
+              [
+                { text: '📅 Compare Today', callback_data: `comp_${share.friendId}_today` },
+                { text: '📅 Compare Tomorrow', callback_data: `comp_${share.friendId}_tomorrow` }
+              ],
+              [
+                { text: '❌ Revoke Share', callback_data: `unsh_${share.friendId}` }
+              ]
+            ]
+          };
+          
+          await bot.sendMessage(chatId, `🟢 *Mutually Sharing: ${friendEmail} (${studentId})*`, {
+            parse_mode: 'Markdown',
+            reply_markup: inlineKeyboard
+          });
+        } else {
+          if (share.isRequester) {
+            const inlineKeyboard = {
+              inline_keyboard: [
+                [
+                  { text: '❌ Cancel Request', callback_data: `unsh_${share.friendId}` }
+                ]
+              ]
+            };
+            await bot.sendMessage(chatId, `⏳ *Pending Approval from: ${friendEmail} (${studentId})*\n_Waiting for them to run \`/share ${user.email}\`_`, {
+              parse_mode: 'Markdown',
+              reply_markup: inlineKeyboard
+            });
+          } else {
+            const inlineKeyboard = {
+              inline_keyboard: [
+                [
+                  { text: '✅ Accept Share', callback_data: `acc_${share.friendId}` },
+                  { text: '❌ Reject', callback_data: `unsh_${share.friendId}` }
+                ]
+              ]
+            };
+            await bot.sendMessage(chatId, `🔔 *Share Request from: ${friendEmail} (${studentId})*\n_Click Accept to share back and link calendars._`, {
+              parse_mode: 'Markdown',
+              reply_markup: inlineKeyboard
+            });
+          }
+        }
+      }
+    } catch (err) {
+      bot.editMessageText(`❌ Failed to load shares: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
+    }
+  });
+
+  // /note command (saves custom session notes)
+  bot.onText(/\/note(?:\s+(.+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    if (!match[1]) {
+      return bot.sendMessage(chatId, `ℹ️ *Add Note for Next Class*\nUse this command to attach a reminder note to your next class session.\n\nUsage: \`/note <your note text>\`\nExample: \`/note review pages 10-20 of case study\``, { parse_mode: 'Markdown' });
+    }
+
+    const noteText = match[1].trim();
+    const loadingMsg = await bot.sendMessage(chatId, `🔄 *Finding your next class session...*`, { parse_mode: 'Markdown' });
+
+    try {
+      const data = await fetchXLRIERPData(user.email, user.password);
+      
+      const tzOffset = 5.5 * 60 * 60 * 1000;
+      const nowIST = new Date(Date.now() + tzOffset);
+      const todayStr = formatDate(nowIST);
+      const currentHourMin = nowIST.toISOString().slice(11, 19); // "HH:MM:SS"
+
+      const activeCourseOfferIds = new Set(data.courses.map(c => c.id));
+      const filteredSessions = data.sessions.filter(s => {
+        if (!s.courseOfferId) return true;
+        if (!activeCourseOfferIds.has(s.courseOfferId)) return false;
+        return sessionMatchesSection(s, user.sections);
+      });
+
+      // Sort sessions by date and start time
+      filteredSessions.sort((a, b) => {
+        const dateComp = a.classDate.localeCompare(b.classDate);
+        if (dateComp !== 0) return dateComp;
+        return (a.startTime || '').localeCompare(b.startTime || '');
+      });
+
+      // Find the first session that has not ended yet (today or future)
+      const nextSession = filteredSessions.find(s => {
+        if (s.classDate > todayStr) return true;
+        if (s.classDate === todayStr) {
+          return (s.endTime || '23:59:59') > currentHourMin;
+        }
+        return false;
+      });
+
+      if (!nextSession) {
+        return bot.editMessageText(`⚠️ *No upcoming classes found* in your schedule to attach a reminder to.`, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+      }
+
+      const sessionId = nextSession.sessionId || `session-${nextSession.classDate}-${nextSession.startTime}`;
+      const courseName = nextSession.course?.courseName || 'Class';
+      const courseCode = nextSession.course?.courseCode ? ` (${nextSession.course.courseCode})` : '';
+      const startTime = (nextSession.startTime || '').slice(0, 5);
+
+      // Save note to database
+      await saveSessionNote(chatId, sessionId, noteText);
+
+      const successText = `📌 *Reminder Added for Next Class!*\n\n📚 *Course:* ${courseName}${courseCode}\n📅 *Class Date:* ${nextSession.classDate} at ${startTime}\n📝 *Note:* _${noteText}_\n\n_This note will show up in your /schedule and daily morning alerts!_`;
+      await bot.editMessageText(successText, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+
+    } catch (err) {
+      bot.editMessageText(`❌ Failed to add note: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
     }
   });
 
