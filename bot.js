@@ -505,13 +505,24 @@ function initBot() {
           .sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
       };
 
+      const getActivitiesForDate = (dateStr) => {
+        return data.activities
+          .filter(act => {
+            if (act.date !== dateStr) return false;
+            return activityMatchesCourses(act, data.courses);
+          })
+          .sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
+      };
+
       const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
       let response = `📅 *Your XLRI Timetable (${limit} Day${limit > 1 ? 's' : ''})*\n\n`;
 
       for (let i = 0; i < limit; i++) {
         const targetDate = new Date(todayIST.getTime() + i * 24 * 60 * 60 * 1000);
         const dateStr = formatDate(targetDate);
+        
         const sessions = getScheduleForDate(dateStr);
+        const activities = getActivitiesForDate(dateStr);
         
         let label = '';
         if (i === 0) {
@@ -524,23 +535,42 @@ function initBot() {
 
         response += `*${label}*:\n`;
 
-        if (sessions.length === 0) {
-          response += `🎉 No classes scheduled!\n\n`;
+        if (sessions.length === 0 && activities.length === 0) {
+          response += `🎉 No classes or activities scheduled!\n\n`;
         } else {
-          sessions.forEach(s => {
-            const start = (s.startTime || '').slice(0, 5);
-            const end = (s.endTime || '').slice(0, 5);
-            const name = s.course?.courseName || 'Class';
-            const cancel = s.status === 'cancelled' ? '❌ *CANCELLED* ' : '';
-            const venue = s.venue?.name ? ` @ ${s.venue.name}` : '';
-            
-            let item = `• *${start}-${end}*: ${cancel}${name}${venue}`;
-            const sessionId = s.sessionId || `session-${s.classDate}-${s.startTime}`;
-            if (sessionNotes && sessionNotes[sessionId]) {
-              item += `\n  📌 *Note:* _${sessionNotes[sessionId]}_`;
-            }
-            response += item + `\n`;
-          });
+          // Print classes
+          if (sessions.length > 0) {
+            sessions.forEach(s => {
+              const start = (s.startTime || '').slice(0, 5);
+              const end = (s.endTime || '').slice(0, 5);
+              const name = s.course?.courseName || 'Class';
+              const cancel = s.status === 'cancelled' ? '❌ *CANCELLED* ' : '';
+              const venue = s.venue?.name ? ` @ ${s.venue.name}` : '';
+              
+              let item = `• *${start}-${end}*: ${cancel}${name}${venue}`;
+              const sessionId = s.sessionId || `session-${s.classDate}-${s.startTime}`;
+              if (sessionNotes && sessionNotes[sessionId]) {
+                item += `\n  📌 *Note:* _${sessionNotes[sessionId]}_`;
+              }
+              response += item + '\n';
+            });
+          }
+
+          // Print activities / quizzes
+          if (activities.length > 0) {
+            activities.forEach(act => {
+              const start = (act.startTime || '').slice(0, 5);
+              const timeStr = start ? ` at ${start}` : '';
+              const venueStr = act.venue?.name ? ` [📍 ${act.venue.name}]` : '';
+              const name = act.name || 'Activity';
+              
+              const isExam = /exam|quiz|term/i.test(name);
+              const emoji = isExam ? '⚠️' : '🔔';
+              const styledName = isExam ? `*${name.toUpperCase()}*` : name;
+              
+              response += `${emoji} ${styledName}${timeStr}${venueStr}\n`;
+            });
+          }
           response += `\n`;
         }
       }
