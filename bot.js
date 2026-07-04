@@ -585,8 +585,8 @@ function initBot() {
     }
   });
 
-  // /activities command
-  bot.onText(/\/activities/, async (msg) => {
+  // /activities and /activity command
+  bot.onText(/\/activit(?:ies|y)(?:\s+(.+))?/, async (msg, match) => {
     const chatId = msg.chat.id;
     const user = await getUser(chatId);
 
@@ -594,32 +594,80 @@ function initBot() {
       return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
     }
 
-    const loadingMsg = await bot.sendMessage(chatId, `🔔 *Fetching upcoming activities...*`, { parse_mode: 'Markdown' });
+    const arg = match[1] ? match[1].toLowerCase().trim() : null;
+    
+    const tzOffset = 5.5 * 60 * 60 * 1000;
+    const todayIST = new Date(Date.now() + tzOffset);
+    const todayStr = formatDate(todayIST);
+
+    let targetDateStr = null;
+    let label = 'Next 7 Days';
+    let isSingleDay = false;
+
+    if (arg) {
+      const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      
+      if (arg === 'today') {
+        targetDateStr = todayStr;
+        label = `Today (${todayStr})`;
+        isSingleDay = true;
+      } else if (arg === 'tomorrow' || arg === 'tmrw') {
+        const tomorrowIST = new Date(todayIST.getTime() + 24 * 60 * 60 * 1000);
+        targetDateStr = formatDate(tomorrowIST);
+        label = `Tomorrow (${targetDateStr})`;
+        isSingleDay = true;
+      } else if (daysOfWeek.includes(arg)) {
+        const targetDayIndex = daysOfWeek.indexOf(arg);
+        const currentDayIndex = todayIST.getUTCDay();
+        let diff = targetDayIndex - currentDayIndex;
+        if (diff < 0) diff += 7; // Next week's occurrence
+        const targetDate = new Date(todayIST.getTime() + diff * 24 * 60 * 60 * 1000);
+        targetDateStr = formatDate(targetDate);
+        label = `${arg.charAt(0).toUpperCase() + arg.slice(1)} (${targetDateStr})`;
+        isSingleDay = true;
+      } else if (/^\d{4}-\d{2}-\d{2}$/.test(arg)) {
+        targetDateStr = arg;
+        label = arg;
+        isSingleDay = true;
+      } else {
+        return bot.sendMessage(chatId, `⚠️ *Invalid Date/Day.*\nUse: \`/activities\` (next 7 days), \`/activities tomorrow\`, \`/activities monday\`, or \`/activities YYYY-MM-DD\`.`, { parse_mode: 'Markdown' });
+      }
+    }
+
+    const loadingMsg = await bot.sendMessage(chatId, `🔔 *Fetching academic activities for ${label}...*`, { parse_mode: 'Markdown' });
 
     try {
       const data = await fetchXLRIERPData(user.email, user.password);
       
-      const tzOffset = 5.5 * 60 * 60 * 1000;
-      const todayIST = new Date(Date.now() + tzOffset);
-      const sevenDaysLater = new Date(todayIST.getTime() + 7 * 24 * 60 * 60 * 1000);
-      
-      const todayStr = formatDate(todayIST);
-      const limitStr = formatDate(sevenDaysLater);
-      
-      const upcoming = data.activities.filter(act => {
-        if (!act.date || act.date < todayStr || act.date > limitStr) return false;
-        return activityMatchesCourses(act, data.courses);
-      }).sort((a, b) => {
+      let filteredActivities = [];
+      if (isSingleDay) {
+        filteredActivities = data.activities.filter(act => {
+          if (act.date !== targetDateStr) return false;
+          return activityMatchesCourses(act, data.courses);
+        });
+      } else {
+        // Next 7 days (default)
+        const sevenDaysLater = new Date(todayIST.getTime() + 7 * 24 * 60 * 60 * 1000);
+        const limitStr = formatDate(sevenDaysLater);
+        
+        filteredActivities = data.activities.filter(act => {
+          if (!act.date || act.date < todayStr || act.date > limitStr) return false;
+          return activityMatchesCourses(act, data.courses);
+        });
+      }
+
+      // Sort activities by date and start time
+      filteredActivities.sort((a, b) => {
         const dateComp = a.date.localeCompare(b.date);
         if (dateComp !== 0) return dateComp;
         return (a.startTime || '').localeCompare(b.startTime || '');
       });
 
-      let response = `🔔 *Academic Activities (Next 7 Days)*\n\n`;
-      if (upcoming.length === 0) {
-        response += `✅ *All Clear!* No quizzes, assignments, or presentations found in this period.`;
+      let response = `🔔 *Academic Activities (${label})*\n\n`;
+      if (filteredActivities.length === 0) {
+        response += `✅ *All Clear!* No quizzes, assignments, or presentations found.`;
       } else {
-        upcoming.forEach(act => {
+        filteredActivities.forEach(act => {
           const timeStr = act.startTime ? ` at ${act.startTime.slice(0, 5)}` : '';
           const venueStr = act.venue?.name ? ` [📍 ${act.venue.name}]` : '';
           const name = act.name || 'Activity';
