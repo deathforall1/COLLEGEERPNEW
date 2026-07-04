@@ -603,11 +603,20 @@ function initBot() {
     let targetDateStr = null;
     let label = 'Next 7 Days';
     let isSingleDay = false;
+    let isRange = false;
+    let limitStr = null;
 
     if (arg) {
       const daysOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
       
-      if (arg === 'today') {
+      if (/^\d+$/.test(arg)) {
+        const numDays = parseInt(arg, 10);
+        const limitDays = Math.min(Math.max(numDays, 1), 30); // Cap between 1 and 30 days
+        const targetDate = new Date(todayIST.getTime() + limitDays * 24 * 60 * 60 * 1000);
+        limitStr = formatDate(targetDate);
+        label = `Next ${limitDays} Days`;
+        isRange = true;
+      } else if (arg === 'today') {
         targetDateStr = todayStr;
         label = `Today (${todayStr})`;
         isSingleDay = true;
@@ -630,7 +639,7 @@ function initBot() {
         label = arg;
         isSingleDay = true;
       } else {
-        return bot.sendMessage(chatId, `⚠️ *Invalid Date/Day.*\nUse: \`/activities\` (next 7 days), \`/activities tomorrow\`, \`/activities monday\`, or \`/activities YYYY-MM-DD\`.`, { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, `⚠️ *Invalid Date/Day/Range.*\nUse:\n• \`/activities\` (next 7 days)\n• \`/activities 5\` (next 5 days)\n• \`/activities tomorrow\`\n• \`/activities monday\`\n• \`/activities YYYY-MM-DD\``, { parse_mode: 'Markdown' });
       }
     }
 
@@ -645,13 +654,18 @@ function initBot() {
           if (act.date !== targetDateStr) return false;
           return activityMatchesCourses(act, data.courses);
         });
+      } else if (isRange) {
+        filteredActivities = data.activities.filter(act => {
+          if (!act.date || act.date < todayStr || act.date > limitStr) return false;
+          return activityMatchesCourses(act, data.courses);
+        });
       } else {
         // Next 7 days (default)
         const sevenDaysLater = new Date(todayIST.getTime() + 7 * 24 * 60 * 60 * 1000);
-        const limitStr = formatDate(sevenDaysLater);
+        const limitStrDefault = formatDate(sevenDaysLater);
         
         filteredActivities = data.activities.filter(act => {
-          if (!act.date || act.date < todayStr || act.date > limitStr) return false;
+          if (!act.date || act.date < todayStr || act.date > limitStrDefault) return false;
           return activityMatchesCourses(act, data.courses);
         });
       }
