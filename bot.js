@@ -23,6 +23,8 @@ const { initScheduler } = require('./scheduler');
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000';
 
+const tempNotes = new Map();
+
 // Candidate paths for discovery
 const MENU_CANDIDATES = [
   '/mess-menu/me',
@@ -465,6 +467,52 @@ function initBot() {
 
       } catch (err) {
         await bot.editMessageText(`❌ Failed to compare calendars: ${err.message}`, { chat_id: chatId, message_id: compareMsg.message_id });
+      }
+      return;
+    }
+
+    // 5. Apply Note Callback
+    if (data.startsWith('anote_')) {
+      const sessionId = data.slice(6); // "anote_" is 6 characters
+      const noteText = tempNotes.get(chatId);
+      
+      if (!noteText) {
+        return bot.answerCallbackQuery(query.id, { text: '⚠️ Note draft expired. Please run /note again.', show_alert: true });
+      }
+      
+      const user = await getUser(chatId);
+      if (!user) return bot.answerCallbackQuery(query.id, { text: 'Session expired.' });
+
+      await bot.answerCallbackQuery(query.id, { text: 'Saving reminder...' });
+      
+      try {
+        const data = await fetchXLRIERPData(user.email, user.password);
+        
+        const activeCourseOfferIds = new Set(data.courses.map(c => c.id));
+        const session = data.sessions.find(s => {
+          const sId = s.sessionId || `session-${s.classDate}-${s.startTime}`;
+          return sId === sessionId;
+        });
+
+        // Save note
+        await saveSessionNote(chatId, sessionId, noteText);
+        tempNotes.delete(chatId); // clean up draft
+
+        let courseName = 'Class';
+        let startTime = '';
+        let classDate = '';
+        if (session) {
+          courseName = session.course?.courseName || 'Class';
+          startTime = session.startTime ? ` at ${session.startTime.slice(0, 5)}` : '';
+          classDate = session.classDate;
+        }
+
+        await bot.deleteMessage(chatId, query.message.message_id);
+        
+        const successText = `📌 *Reminder Added!*\n\n📚 *Course:* ${courseName}\n📅 *Class Date:* ${classDate}${startTime}\n📝 *Note:* _${noteText}_\n\n_This note will show up in your /schedule and daily morning alerts!_`;
+        await bot.sendMessage(chatId, successText, { parse_mode: 'Markdown' });
+      } catch (err) {
+        await bot.sendMessage(chatId, `❌ Failed to save reminder: ${err.message}`);
       }
       return;
     }
@@ -1060,11 +1108,11 @@ function initBot() {
     }
 
     if (!match[1]) {
-      return bot.sendMessage(chatId, `ℹ️ *Add Note for Next Class*\nUse this command to attach a reminder note to your next class session.\n\nUsage: \`/note <your note text>\`\nExample: \`/note review pages 10-20 of case study\``, { parse_mode: 'Markdown' });
+      return bot.sendMessage(chatId, `ℹ️ *Add Note for Class*\nUse this command to attach a reminder note to one of your upcoming class sessions.\n\nUsage: \`/note <your note text>\`\nExample: \`/note review pages 10-20 of case study\``, { parse_mode: 'Markdown' });
     }
 
     const noteText = match[1].trim();
-    const loadingMsg = await bot.sendMessage(chatId, `🔄 *Finding your next class session...*`, { parse_mode: 'Markdown' });
+    const loadingMsg = await bot.sendMessage(chatId, `🔄 *Finding your upcoming classes...*`, { parse_mode: 'Markdown' });
 
     try {
       const data = await fetchXLRIERPData(user.email, user.password);
@@ -1088,8 +1136,8 @@ function initBot() {
         return (a.startTime || '').localeCompare(b.startTime || '');
       });
 
-      // Find the first session that has not ended yet (today or future)
-      const nextSession = filteredSessions.find(s => {
+      // Find upcoming classes (not ended yet)
+      const upcomingSessions = filteredSessions.filter(s => {
         if (s.classDate > todayStr) return true;
         if (s.classDate === todayStr) {
           return (s.endTime || '23:59:59') > currentHourMin;
@@ -1097,23 +1145,38 @@ function initBot() {
         return false;
       });
 
-      if (!nextSession) {
+      if (upcomingSessions.length === 0) {
         return bot.editMessageText(`⚠️ *No upcoming classes found* in your schedule to attach a reminder to.`, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
       }
 
-      const sessionId = nextSession.sessionId || `session-${nextSession.classDate}-${nextSession.startTime}`;
-      const courseName = nextSession.course?.courseName || 'Class';
-      const courseCode = nextSession.course?.courseCode ? ` (${nextSession.course.courseCode})` : '';
-      const startTime = (nextSession.startTime || '').slice(0, 5);
+      // Save draft note in memory
+      tempNotes.set(chatId, noteText);
 
-      // Save note to database
-      await saveSessionNote(chatId, sessionId, noteText);
+      // Construct inline buttons scroll/list for next 5 classes
+      const inlineKeyboard = upcomingSessions.slice(0, 5).map(s => {
+        const start = (s.startTime || '').slice(0, 5);
+        const name = s.course?.courseCode || s.course?.courseName || 'Class';
+        const dateFormatted = s.classDate.slice(5); // e.g. "07-06"
+        const label = `📚 ${name} (${dateFormatted} @ ${start})`;
+        const sessionId = s.sessionId || `session-${s.classDate}-${s.startTime}`;
+        
+        return [{
+          text: label,
+          callback_data: `anote_${sessionId}`
+        }];
+      });
 
-      const successText = `📌 *Reminder Added for Next Class!*\n\n📚 *Course:* ${courseName}${courseCode}\n📅 *Class Date:* ${nextSession.classDate} at ${startTime}\n📝 *Note:* _${noteText}_\n\n_This note will show up in your /schedule and daily morning alerts!_`;
-      await bot.editMessageText(successText, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+      await bot.deleteMessage(chatId, loadingMsg.message_id);
+
+      await bot.sendMessage(chatId, `📝 *Select which class to attach this note to:*\n\n📌 *Note Draft:* _"${noteText}"_`, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: inlineKeyboard
+        }
+      });
 
     } catch (err) {
-      bot.editMessageText(`❌ Failed to add note: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
+      bot.sendMessage(chatId, `❌ Failed to load upcoming classes: ${err.message}`);
     }
   });
 
