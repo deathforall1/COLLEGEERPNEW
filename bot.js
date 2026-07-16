@@ -944,13 +944,14 @@ function initBot() {
           else if (c.band === 'warning') statusEmoji = '🟡';
 
           response += `${statusEmoji} *${c.courseName}* (\`${c.courseCode}\`)\n`;
-          response += `• Attendance: *${c.percent}%* (${c.attended}/${c.total} class${c.total !== 1 ? 'es' : ''})\n`;
+          response += `• Credits: ${c.credits} | Min Req: *${c.target}%*\n`;
+          response += `• Current Attendance: *${c.percent}%* (${c.attended}/${c.total} class${c.total !== 1 ? 'es' : ''})\n`;
           
           if (c.bunkVerdict) {
             if (c.bunkVerdict.mode === 'skip') {
-              response += `• Verdict: You can safely skip next *${c.bunkVerdict.count}* class${c.bunkVerdict.count !== 1 ? 'es' : ''}.\n`;
+              response += `• Verdict: You can safely skip next *${c.bunkVerdict.count}* class${c.bunkVerdict.count !== 1 ? 'es' : ''} (will stay >= ${c.target}%).\n`;
             } else {
-              response += `• Verdict: ⚠️ You must attend next *${c.bunkVerdict.count}* consecutive class${c.bunkVerdict.count !== 1 ? 'es' : ''} to recover to 75%!\n`;
+              response += `• Verdict: ⚠️ You must attend next *${c.bunkVerdict.count}* consecutive class${c.bunkVerdict.count !== 1 ? 'es' : ''} to recover to ${c.target}%!\n`;
             }
           }
           response += `\n`;

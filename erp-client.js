@@ -264,6 +264,9 @@ async function fetchXLRIERPAttendance(email, password) {
       const res = await axios.get(url, { headers, timeout: 10000 });
       const records = res.data?.data || [];
 
+      const credits = c.courseOfferCredit || 3;
+      const target = credits === 2 ? (11 / 13) : 0.80; // 11/13 (~84.6%) for 2 credits, 80% for 3 credits
+
       const total = records.length;
       const attended = records.filter(r => r.isPresent === true).length;
 
@@ -272,30 +275,33 @@ async function fetchXLRIERPAttendance(email, password) {
         percent = Math.round((attended / total) * 1000) / 10;
       }
 
+      const targetPercent = target * 100;
       let band = 'safe';
-      if (percent < 75) band = 'danger';
-      else if (percent < 80) band = 'warning';
+      if (percent < targetPercent - 5) band = 'danger';
+      else if (percent < targetPercent) band = 'warning';
 
       // Calculate bunk verdict
       let skippable = 0;
-      while (total + skippable + 1 > 0 && attended / (total + skippable + 1) >= 0.75) {
+      while (total + skippable + 1 > 0 && attended / (total + skippable + 1) >= target) {
         skippable += 1;
       }
 
       let needed = 0;
-      if (percent < 75) {
-        while ((attended + needed) / (total + needed) < 0.75) {
+      if (percent < targetPercent) {
+        while (total + needed > 0 && (attended + needed) / (total + needed) < target) {
           needed += 1;
         }
       }
 
-      const bunkVerdict = percent >= 75
+      const bunkVerdict = percent >= targetPercent
         ? { mode: 'skip', count: skippable }
         : { mode: 'recover', count: needed };
 
       return {
         courseCode: c.courseCode,
         courseName: c.courseName,
+        credits,
+        target: Math.round(target * 1000) / 10,
         total,
         attended,
         percent,
@@ -304,9 +310,13 @@ async function fetchXLRIERPAttendance(email, password) {
       };
     } catch (err) {
       console.error(`[ERP] Failed to fetch attendance for ${c.courseName}:`, err.message);
+      const credits = c.courseOfferCredit || 3;
+      const target = credits === 2 ? (11 / 13) : 0.80;
       return {
         courseCode: c.courseCode,
         courseName: c.courseName,
+        credits,
+        target: Math.round(target * 1000) / 10,
         total: 0,
         attended: 0,
         percent: 100,
