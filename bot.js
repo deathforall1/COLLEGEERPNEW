@@ -17,7 +17,7 @@ const {
   getSessionNotes,
   deleteSessionNote
 } = require('./database');
-const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPMessMenu, fetchXLRIERPGrades } = require('./erp-client');
+const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPMessMenu, fetchXLRIERPGrades, fetchXLRIERPAttendance } = require('./erp-client');
 const { initScheduler } = require('./scheduler');
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -220,6 +220,7 @@ function initBot() {
     { command: 'note', description: 'Add reminder for next class: /note text' },
     { command: 'mess_menu', description: 'View mess menu (e.g. /mess_menu tomorrow)' },
     { command: 'grades', description: 'View grades and CGPA summary' },
+    { command: 'attendance', description: 'View course attendance and skip verdicts' },
     { command: 'calendar', description: 'Open interactive calendar WebApp' },
     { command: 'logout', description: 'Delete your credentials and logout' }
   ]).then(() => {
@@ -238,7 +239,7 @@ function initBot() {
   // /start command
   bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-    const greeting = `👋 *Welcome to the XLRI ERP Bot!*\n\nI can automatically send your schedule every night and help you query your classes, quizzes, mess menu, and grades directly in Telegram.\n\n🔑 *Get Started:*\nTo link your XLRI account, use the login command:\n\`/login your_email@astra.xlri.ac.in your_password\`\n\n⚙️ *Available Commands:*\n• /schedule - Fetch today and tomorrow's classes\n• /activities - List quizzes/activities for the next 7 days\n• /calendar - Open the interactive monthly calendar WebApp\n• /sections - Select your course sections\n• /share - Share calendar with a classmate\n• /unshare - Stop calendar sharing with a classmate\n• /friends - View linked friends and check common free slots\n• /mess\\_menu - View today's mess menu\n• /grades - View your grades and CGPA\n• /logout - Permanent deletion of your credentials\n\n_Note: Credentials are stored securely and encrypted on disk using AES-256._`;
+    const greeting = `👋 *Welcome to the XLRI ERP Bot!*\n\nI can automatically send your schedule every night and help you query your classes, quizzes, mess menu, grades, and attendance directly in Telegram.\n\n🔑 *Get Started:*\nTo link your XLRI account, use the login command:\n\`/login your_email@astra.xlri.ac.in your_password\`\n\n⚙️ *Available Commands:*\n• /schedule - Fetch today and tomorrow's classes\n• /activities - List quizzes/activities for the next 7 days\n• /calendar - Open the interactive monthly calendar WebApp\n• /sections - Select your course sections\n• /share - Share calendar with a classmate\n• /unshare - Stop calendar sharing with a classmate\n• /friends - View linked friends and check common free slots\n• /mess\\_menu - View today's mess menu\n• /grades - View your grades and CGPA\n• /attendance - View your course attendance and bunk verdicts\n• /logout - Permanent deletion of your credentials\n\n_Note: Credentials are stored securely and encrypted on disk using AES-256._`;
     bot.sendMessage(chatId, greeting, { parse_mode: 'Markdown' });
   });
 
@@ -911,6 +912,69 @@ function initBot() {
       }
     } catch (err) {
       bot.editMessageText(`❌ Connection error: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
+    }
+  });
+
+  // /attendance and /attend command
+  bot.onText(/\/(?:attendance|attend)/, async (msg) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    const loadingMsg = await bot.sendMessage(chatId, `📊 *Fetching your ERP attendance...*`, { parse_mode: 'Markdown' });
+
+    try {
+      const attendanceData = await fetchXLRIERPAttendance(user.email, user.password);
+
+      if (attendanceData && Array.isArray(attendanceData.attendance) && attendanceData.attendance.length > 0) {
+        let response = `📊 *Attendance Summary (${attendanceData.termCode || attendanceData.termName})* 📊\n\n`;
+        
+        let grandTotal = 0;
+        let grandAttended = 0;
+
+        attendanceData.attendance.forEach(c => {
+          grandTotal += c.total;
+          grandAttended += c.attended;
+
+          let statusEmoji = '🟢';
+          if (c.band === 'danger') statusEmoji = '🔴';
+          else if (c.band === 'warning') statusEmoji = '🟡';
+
+          response += `${statusEmoji} *${c.courseName}* (\`${c.courseCode}\`)\n`;
+          response += `• Attendance: *${c.percent}%* (${c.attended}/${c.total} class${c.total !== 1 ? 'es' : ''})\n`;
+          
+          if (c.bunkVerdict) {
+            if (c.bunkVerdict.mode === 'skip') {
+              response += `• Verdict: You can safely skip next *${c.bunkVerdict.count}* class${c.bunkVerdict.count !== 1 ? 'es' : ''}.\n`;
+            } else {
+              response += `• Verdict: ⚠️ You must attend next *${c.bunkVerdict.count}* consecutive class${c.bunkVerdict.count !== 1 ? 'es' : ''} to recover to 75%!\n`;
+            }
+          }
+          response += `\n`;
+        });
+
+        // Overall summary
+        let overallPercent = 100;
+        if (grandTotal > 0) {
+          overallPercent = Math.round((grandAttended / grandTotal) * 1000) / 10;
+        }
+
+        let overallEmoji = '🟢';
+        if (overallPercent < 75) overallEmoji = '🔴';
+        else if (overallPercent < 80) overallEmoji = '🟡';
+
+        response += `----------------------------------------\n`;
+        response += `${overallEmoji} *Overall Attendance:* *${overallPercent}%* (${grandAttended}/${grandTotal} classes)\n`;
+
+        await bot.editMessageText(response, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+      } else {
+        bot.editMessageText(`⚠️ *Attendance Empty/Unavailable.*\nNo active courses or attendance records found for this term.`, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+      }
+    } catch (err) {
+      bot.editMessageText(`❌ Failed to fetch attendance: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
     }
   });
 

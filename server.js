@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { generateICS } = require('./ics-generator');
 const { initBot } = require('./bot');
-const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses } = require('./erp-client');
+const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPAttendance } = require('./erp-client');
 const { getUser } = require('./database');
 
 const app = express();
@@ -316,6 +316,39 @@ app.get('/api/telegram-schedule', async (req, res) => {
 
   } catch (err) {
     console.error(`[API] Error fetching Telegram schedule for chatId ${chatId}: ${err.message}`);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 5. Fetch attendance by email/password or Telegram chatId
+ * Example: GET /api/attendance?email=abc@xlri.ac.in&password=password
+ *      or: GET /api/attendance?chatId=12345678
+ */
+app.get('/api/attendance', async (req, res) => {
+  const { email, password, chatId } = req.query;
+
+  try {
+    let finalEmail = email;
+    let finalPassword = password;
+
+    if (chatId) {
+      const user = await getUser(chatId);
+      if (!user) {
+        return res.status(404).json({ error: 'User not registered. Please use /login in the Telegram bot.' });
+      }
+      finalEmail = user.email;
+      finalPassword = user.password;
+    }
+
+    if (!finalEmail || !finalPassword) {
+      return res.status(400).json({ error: 'Missing authentication parameters. Provide email and password, or chatId.' });
+    }
+
+    const data = await fetchXLRIERPAttendance(finalEmail, finalPassword);
+    return res.json({ success: true, data });
+  } catch (err) {
+    console.error(`[API] Error fetching attendance: ${err.message}`);
     return res.status(500).json({ error: err.message });
   }
 });

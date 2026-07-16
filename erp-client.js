@@ -218,10 +218,118 @@ async function fetchXLRIERPGrades(email, password) {
   return gradesRes.data;
 }
 
+async function fetchXLRIERPAttendance(email, password) {
+  const ERP_BASE = 'https://xlerp.xlri.ac.in/api/v1';
+  console.log(`[ERP] Fetching attendance for user: ${email}`);
+
+  const loginRes = await axios.post(`${ERP_BASE}/auth/login`, {
+    email,
+    password
+  }, {
+    headers: { 'Content-Type': 'application/json' },
+    timeout: 10000
+  });
+
+  const token = loginRes.data?.token || loginRes.data?.data?.token;
+  if (!token) {
+    throw new Error('Authentication failed.');
+  }
+
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  };
+
+  const gradesRes = await axios.get(`${ERP_BASE}/course-offerings/me/grades`, { headers, timeout: 15000 });
+  const terms = gradesRes.data?.data?.terms || [];
+
+  const nowStr = new Date().toISOString().slice(0, 10);
+  // Filter terms that have started
+  const startedTerms = terms.filter(t => t.startDate && t.startDate.slice(0, 10) <= nowStr);
+  // Sort by startDate descending to get the most recent term
+  startedTerms.sort((a, b) => b.startDate.localeCompare(a.startDate));
+  const currentTerm = startedTerms[0];
+
+  if (!currentTerm || !currentTerm.courses) {
+    return {
+      termName: 'No active term',
+      termCode: '',
+      attendance: []
+    };
+  }
+
+  const promises = currentTerm.courses.map(async (c) => {
+    const url = `${ERP_BASE}/attendance/student/${c.enrollmentId}`;
+    try {
+      const res = await axios.get(url, { headers, timeout: 10000 });
+      const records = res.data?.data || [];
+
+      const total = records.length;
+      const attended = records.filter(r => r.isPresent === true).length;
+
+      let percent = 100;
+      if (total > 0) {
+        percent = Math.round((attended / total) * 1000) / 10;
+      }
+
+      let band = 'safe';
+      if (percent < 75) band = 'danger';
+      else if (percent < 80) band = 'warning';
+
+      // Calculate bunk verdict
+      let skippable = 0;
+      while (total + skippable + 1 > 0 && attended / (total + skippable + 1) >= 0.75) {
+        skippable += 1;
+      }
+
+      let needed = 0;
+      if (percent < 75) {
+        while ((attended + needed) / (total + needed) < 0.75) {
+          needed += 1;
+        }
+      }
+
+      const bunkVerdict = percent >= 75
+        ? { mode: 'skip', count: skippable }
+        : { mode: 'recover', count: needed };
+
+      return {
+        courseCode: c.courseCode,
+        courseName: c.courseName,
+        total,
+        attended,
+        percent,
+        band,
+        bunkVerdict
+      };
+    } catch (err) {
+      console.error(`[ERP] Failed to fetch attendance for ${c.courseName}:`, err.message);
+      return {
+        courseCode: c.courseCode,
+        courseName: c.courseName,
+        total: 0,
+        attended: 0,
+        percent: 100,
+        band: 'safe',
+        bunkVerdict: { mode: 'skip', count: 0 },
+        error: err.message
+      };
+    }
+  });
+
+  const results = await Promise.all(promises);
+  return {
+    termName: currentTerm.termName,
+    termCode: currentTerm.termCode,
+    attendance: results
+  };
+}
+
 module.exports = {
   sessionMatchesSection,
   activityMatchesCourses,
   fetchXLRIERPData,
   fetchXLRIERPMessMenu,
-  fetchXLRIERPGrades
+  fetchXLRIERPGrades,
+  fetchXLRIERPAttendance
 };
