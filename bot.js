@@ -1162,7 +1162,7 @@ function initBot() {
   });
 
   // /eateries command
-  bot.onText(/\/eateries/, async (msg) => {
+  bot.onText(/\/(?:eateries|eatery|canteen)(?:@\w+)?/i, async (msg) => {
     const chatId = msg.chat.id;
     let guide = `🍕 *XLRI Campus Eateries & Contact Guide* 🍔\n\n`;
     guide += `☕ *Bishu Da (Chai & Snacks)*\n`;
@@ -1177,9 +1177,14 @@ function initBot() {
     guide += `• *Contact:* \`+91 94962 94335\`\n`;
     guide += `• *Must Try:* Masala Dosa, Idli Vada, Filter Coffee\n`;
     guide += `• *Location:* Food Court\n\n`;
-    guide += `_Tip: Tap any number above to copy or call directly! Run /mess_menu to see today's mess schedule._`;
+    guide += `_Tip: Tap any number above to copy or call directly! Run /mess\\_menu to see today's mess schedule._`;
     
-    bot.sendMessage(chatId, guide, { parse_mode: 'Markdown' });
+    try {
+      await bot.sendMessage(chatId, guide, { parse_mode: 'Markdown' });
+    } catch (err) {
+      console.warn('[Bot] Eateries Markdown failed, falling back to plain text:', err.message);
+      await bot.sendMessage(chatId, guide);
+    }
   });
 
   // /share command
