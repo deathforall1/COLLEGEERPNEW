@@ -120,10 +120,35 @@ async function initDatabase() {
       );
     `;
     await pool.query(queryExpenses);
+
+    const queryCabRides = `
+      CREATE TABLE IF NOT EXISTS cab_rides (
+        id SERIAL PRIMARY KEY,
+        creator_chat_id BIGINT NOT NULL,
+        destination VARCHAR(255) NOT NULL,
+        travel_date VARCHAR(50) NOT NULL,
+        travel_time VARCHAR(50) NOT NULL,
+        max_seats INTEGER DEFAULT 4,
+        notes TEXT DEFAULT '',
+        status VARCHAR(20) DEFAULT 'open',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    await pool.query(queryCabRides);
+
+    const queryCabPassengers = `
+      CREATE TABLE IF NOT EXISTS cab_passengers (
+        ride_id INTEGER NOT NULL,
+        passenger_chat_id BIGINT NOT NULL,
+        joined_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (ride_id, passenger_chat_id)
+      );
+    `;
+    await pool.query(queryCabPassengers);
     console.log('[DB] PostgreSQL database tables initialized successfully.');
   } else {
     if (!fs.existsSync(DB_FILE)) {
-      writeData({ shares: [], session_notes: {}, expenses: [] });
+      writeData({ shares: [], session_notes: {}, expenses: [], cabs: [] });
     } else {
       const dbData = readData();
       let updated = false;
@@ -133,6 +158,10 @@ async function initDatabase() {
       }
       if (!dbData.expenses) {
         dbData.expenses = [];
+        updated = true;
+      }
+      if (!dbData.cabs) {
+        dbData.cabs = [];
         updated = true;
       }
       if (!dbData.session_notes) {
@@ -648,6 +677,170 @@ async function settleExpensesBetweenUsers(chatId1, chatId2) {
   }
 }
 
+async function createCabRide(creatorChatId, destination, travelDate, travelTime, maxSeats = 4, notes = '') {
+  const creatorCid = Number(creatorChatId);
+  const seats = parseInt(maxSeats, 10) || 4;
+
+  if (pool) {
+    const query = `
+      INSERT INTO cab_rides (creator_chat_id, destination, travel_date, travel_time, max_seats, notes, status)
+      VALUES ($1, $2, $3, $4, $5, $6, 'open')
+      RETURNING id;
+    `;
+    const res = await pool.query(query, [creatorCid, destination, travelDate, travelTime, seats, notes]);
+    const rideId = res.rows[0].id;
+    await pool.query(`INSERT INTO cab_passengers (ride_id, passenger_chat_id) VALUES ($1, $2) ON CONFLICT DO NOTHING;`, [rideId, creatorCid]);
+    return rideId;
+  } else {
+    const dbData = readData();
+    if (!dbData.cabs) dbData.cabs = [];
+    const rideId = Date.now();
+    const ride = {
+      id: rideId,
+      creator_chat_id: creatorCid,
+      destination,
+      travel_date: travelDate,
+      travel_time: travelTime,
+      max_seats: seats,
+      notes: notes || '',
+      status: 'open',
+      created_at: new Date().toISOString(),
+      passengers: [creatorCid]
+    };
+    dbData.cabs.push(ride);
+    writeData(dbData);
+    return rideId;
+  }
+}
+
+async function getActiveCabRides() {
+  if (pool) {
+    const query = `
+      SELECT r.*, ARRAY_AGG(p.passenger_chat_id) AS passengers
+      FROM cab_rides r
+      LEFT JOIN cab_passengers p ON r.id = p.ride_id
+      WHERE r.status = 'open'
+      GROUP BY r.id
+      ORDER BY r.created_at DESC;
+    `;
+    const res = await pool.query(query);
+    return res.rows.map(r => ({
+      id: r.id,
+      creator_chat_id: Number(r.creator_chat_id),
+      destination: r.destination,
+      travel_date: r.travel_date,
+      travel_time: r.travel_time,
+      max_seats: parseInt(r.max_seats, 10),
+      notes: r.notes,
+      status: r.status,
+      created_at: r.created_at,
+      passengers: (r.passengers || []).filter(p => p !== null).map(Number)
+    }));
+  } else {
+    const dbData = readData();
+    const cabs = dbData.cabs || [];
+    return cabs.filter(c => c.status === 'open');
+  }
+}
+
+async function getCabRideById(rideId) {
+  const rId = Number(rideId);
+  if (pool) {
+    const query = `
+      SELECT r.*, ARRAY_AGG(p.passenger_chat_id) AS passengers
+      FROM cab_rides r
+      LEFT JOIN cab_passengers p ON r.id = p.ride_id
+      WHERE r.id = $1
+      GROUP BY r.id;
+    `;
+    const res = await pool.query(query, [rId]);
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      creator_chat_id: Number(r.creator_chat_id),
+      destination: r.destination,
+      travel_date: r.travel_date,
+      travel_time: r.travel_time,
+      max_seats: parseInt(r.max_seats, 10),
+      notes: r.notes,
+      status: r.status,
+      created_at: r.created_at,
+      passengers: (r.passengers || []).filter(p => p !== null).map(Number)
+    };
+  } else {
+    const dbData = readData();
+    const cabs = dbData.cabs || [];
+    return cabs.find(c => c.id === rId) || null;
+  }
+}
+
+async function joinCabRide(rideId, passengerChatId) {
+  const rId = Number(rideId);
+  const pCid = Number(passengerChatId);
+
+  if (pool) {
+    await pool.query(
+      `INSERT INTO cab_passengers (ride_id, passenger_chat_id) VALUES ($1, $2) ON CONFLICT DO NOTHING;`,
+      [rId, pCid]
+    );
+  } else {
+    const dbData = readData();
+    if (dbData.cabs) {
+      const ride = dbData.cabs.find(c => c.id === rId);
+      if (ride) {
+        if (!ride.passengers) ride.passengers = [];
+        if (!ride.passengers.includes(pCid)) {
+          ride.passengers.push(pCid);
+        }
+        writeData(dbData);
+      }
+    }
+  }
+}
+
+async function leaveCabRide(rideId, passengerChatId) {
+  const rId = Number(rideId);
+  const pCid = Number(passengerChatId);
+
+  if (pool) {
+    await pool.query(
+      `DELETE FROM cab_passengers WHERE ride_id = $1 AND passenger_chat_id = $2;`,
+      [rId, pCid]
+    );
+  } else {
+    const dbData = readData();
+    if (dbData.cabs) {
+      const ride = dbData.cabs.find(c => c.id === rId);
+      if (ride && ride.passengers) {
+        ride.passengers = ride.passengers.filter(p => p !== pCid);
+        writeData(dbData);
+      }
+    }
+  }
+}
+
+async function cancelCabRide(rideId, creatorChatId) {
+  const rId = Number(rideId);
+  const cCid = Number(creatorChatId);
+
+  if (pool) {
+    await pool.query(
+      `UPDATE cab_rides SET status = 'cancelled' WHERE id = $1 AND creator_chat_id = $2;`,
+      [rId, cCid]
+    );
+  } else {
+    const dbData = readData();
+    if (dbData.cabs) {
+      const ride = dbData.cabs.find(c => c.id === rId && c.creator_chat_id === cCid);
+      if (ride) {
+        ride.status = 'cancelled';
+        writeData(dbData);
+      }
+    }
+  }
+}
+
 module.exports = {
   initDatabase,
   saveUser,
@@ -667,5 +860,11 @@ module.exports = {
   deleteSessionNote,
   addExpense,
   getUserBalances,
-  settleExpensesBetweenUsers
+  settleExpensesBetweenUsers,
+  createCabRide,
+  getActiveCabRides,
+  getCabRideById,
+  joinCabRide,
+  leaveCabRide,
+  cancelCabRide
 };

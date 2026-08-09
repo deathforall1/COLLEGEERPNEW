@@ -18,7 +18,13 @@ const {
   deleteSessionNote,
   addExpense,
   getUserBalances,
-  settleExpensesBetweenUsers
+  settleExpensesBetweenUsers,
+  createCabRide,
+  getActiveCabRides,
+  getCabRideById,
+  joinCabRide,
+  leaveCabRide,
+  cancelCabRide
 } = require('./database');
 const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPMessMenu, fetchXLRIERPGrades, fetchXLRIERPAttendance, fetchXLRIERPCourseMaterials, downloadXLRIERPFile, fetchXLRIERPStudentProfile } = require('./erp-client');
 const { initScheduler } = require('./scheduler');
@@ -217,6 +223,8 @@ function initBot() {
     { command: 'attendance', description: 'View course attendance and skip verdicts' },
     { command: 'materials', description: 'Browse and download course slides/documents' },
     { command: 'idcard', description: 'View digital student ID card' },
+    { command: 'cab', description: 'Find or join campus cab shares: /cab' },
+    { command: 'postcab', description: 'Post a cab pool: /postcab Ranchi Airport tomorrow 6:30 AM' },
     { command: 'split', description: 'Split expense with a friend: /split 300 B25019 Pizza' },
     { command: 'balances', description: 'View who owes whom in your friend circle' },
     { command: 'settle', description: 'Settle expenses with a classmate: /settle B25019' },
@@ -614,6 +622,73 @@ function initBot() {
       const userRoll = user ? user.email.split('@')[0].toUpperCase() : 'Classmate';
       await bot.sendMessage(chatId, `🤝 *Settled Up!*\nAll expenses with *${friendRoll}* (${friend.email}) have been marked as settled.`, { parse_mode: 'Markdown' });
       await bot.sendMessage(friendChatId, `🔔 *Settled Up!*\n*${userRoll}* marked all expenses between you as settled.`, { parse_mode: 'Markdown' });
+      return;
+    }
+
+    // 8. Cab Sharing Callbacks
+    if (data.startsWith('cab_join_')) {
+      const rideId = data.slice(9);
+      const ride = await getCabRideById(rideId);
+      if (!ride || ride.status !== 'open') {
+        return bot.answerCallbackQuery(query.id, { text: '⚠️ Cab pool expired or cancelled.', show_alert: true });
+      }
+
+      if ((ride.passengers || []).length >= ride.max_seats) {
+        return bot.answerCallbackQuery(query.id, { text: '⚠️ Ride is already full!', show_alert: true });
+      }
+
+      await joinCabRide(rideId, chatId);
+      await bot.answerCallbackQuery(query.id, { text: '🚕 Joined cab pool!' });
+
+      const user = await getUser(chatId);
+      const userRoll = user ? user.email.split('@')[0].toUpperCase() : 'A student';
+      const updatedRide = await getCabRideById(rideId);
+      const seatsCount = (updatedRide.passengers || []).length;
+
+      await bot.sendMessage(chatId, `🎉 *You joined the Cab Pool!*\n📍 *Destination:* ${ride.destination}\n📅 *Date:* ${ride.travel_date} @ ${ride.travel_time}\n👥 *Seats Filled:* ${seatsCount}/${ride.max_seats}`, { parse_mode: 'Markdown' });
+
+      if (Number(ride.creator_chat_id) !== Number(chatId)) {
+        await bot.sendMessage(ride.creator_chat_id, `🔔 *New Passenger Joined Your Cab!* 🚕\n\n👤 *Passenger:* ${userRoll} (${user?.email})\n📍 *Destination:* ${ride.destination}\n👥 *Seats:* ${seatsCount}/${ride.max_seats}`, { parse_mode: 'Markdown' });
+      }
+      return;
+    }
+
+    if (data.startsWith('cab_leave_')) {
+      const rideId = data.slice(10);
+      const ride = await getCabRideById(rideId);
+      if (!ride) return bot.answerCallbackQuery(query.id, { text: 'Ride not found.' });
+
+      await leaveCabRide(rideId, chatId);
+      await bot.answerCallbackQuery(query.id, { text: 'Left cab pool.' });
+
+      const user = await getUser(chatId);
+      const userRoll = user ? user.email.split('@')[0].toUpperCase() : 'A student';
+
+      await bot.sendMessage(chatId, `⚠️ *Left Cab Pool*\nYou have left the cab to ${ride.destination}.`, { parse_mode: 'Markdown' });
+      if (Number(ride.creator_chat_id) !== Number(chatId)) {
+        await bot.sendMessage(ride.creator_chat_id, `ℹ️ **${userRoll}** left your cab pool to ${ride.destination}.`, { parse_mode: 'Markdown' });
+      }
+      return;
+    }
+
+    if (data.startsWith('cab_cancel_')) {
+      const rideId = data.slice(11);
+      const ride = await getCabRideById(rideId);
+      if (!ride) return bot.answerCallbackQuery(query.id, { text: 'Ride not found.' });
+
+      if (Number(ride.creator_chat_id) !== Number(chatId)) {
+        return bot.answerCallbackQuery(query.id, { text: 'Only the creator can cancel this ride.', show_alert: true });
+      }
+
+      await cancelCabRide(rideId, chatId);
+      await bot.answerCallbackQuery(query.id, { text: 'Cab pool cancelled.' });
+      await bot.sendMessage(chatId, `🗑️ *Cab Pool Cancelled*\nYour ride to ${ride.destination} on ${ride.travel_date} has been cancelled.`, { parse_mode: 'Markdown' });
+
+      for (const pId of (ride.passengers || [])) {
+        if (Number(pId) !== Number(chatId)) {
+          await bot.sendMessage(pId, `⚠️ *Cab Pool Cancelled*\nThe ride to **${ride.destination}** on ${ride.travel_date} was cancelled by the host.`, { parse_mode: 'Markdown' });
+        }
+      }
       return;
     }
   });
@@ -1695,6 +1770,110 @@ function initBot() {
 
     await bot.sendMessage(chatId, `🤝 *Settled Up!*\nAll expenses with *${friendRoll}* (${friend.email}) have been marked as settled.`, { parse_mode: 'Markdown' });
     await bot.sendMessage(friend.chatId, `🔔 *Settled Up!*\n**${userRoll}** marked all expenses between you as settled.`, { parse_mode: 'Markdown' });
+  });
+
+  // /cab or /ride command
+  bot.onText(/\/(?:cab|ride)/, async (msg) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    const activeRides = await getActiveCabRides();
+    const allUsers = await getAllUsers();
+
+    if (activeRides.length === 0) {
+      let emptyMsg = `🚕 *Campus Cab & Travel Share* 🚕\n\n`;
+      emptyMsg += `🎉 *No active cab pools looking for passengers right now.*\n\n`;
+      emptyMsg += `Be the first to post a cab pool for Ranchi Airport, Tatanagar Station, or City Malls using:\n`;
+      emptyMsg += `\`/postcab Ranchi Airport tomorrow 06:30 AM 4\`\n\n`;
+      emptyMsg += `_Format: /postcab <destination> <date> <time> [seats] [notes]_`;
+      return bot.sendMessage(chatId, emptyMsg, { parse_mode: 'Markdown' });
+    }
+
+    await bot.sendMessage(chatId, `🚕 *Campus Cab Pools & Travel Share* (${activeRides.length} active)\n━━━━━━━━━━━━━━━━━━━━━━━━`, { parse_mode: 'Markdown' });
+
+    for (const ride of activeRides) {
+      const creator = allUsers.find(u => Number(u.chatId) === Number(ride.creator_chat_id));
+      const creatorRoll = creator ? creator.email.split('@')[0].toUpperCase() : 'Student';
+      const passengers = ride.passengers || [];
+      const isJoined = passengers.includes(Number(chatId));
+      const isCreator = Number(ride.creator_chat_id) === Number(chatId);
+      const filledSeats = passengers.length;
+
+      let card = `📍 *Destination:* ${ride.destination}\n`;
+      card += `👤 *Host:* ${creatorRoll} (${creator?.email || ''})\n`;
+      card += `📅 *Date & Time:* ${ride.travel_date} @ ${ride.travel_time}\n`;
+      card += `👥 *Seats:* ${filledSeats}/${ride.max_seats} filled\n`;
+      if (ride.notes) card += `📝 *Notes:* ${ride.notes}\n`;
+
+      const keyboard = [];
+      if (isCreator) {
+        keyboard.push([{ text: `🗑️ Cancel My Cab Pool`, callback_data: `cab_cancel_${ride.id}` }]);
+      } else if (isJoined) {
+        keyboard.push([{ text: `❌ Leave Cab Pool`, callback_data: `cab_leave_${ride.id}` }]);
+      } else if (filledSeats < ride.max_seats) {
+        keyboard.push([{ text: `🚕 Join Ride (${filledSeats}/${ride.max_seats})`, callback_data: `cab_join_${ride.id}` }]);
+      } else {
+        card += `\n⚠️ *Ride Full*`;
+      }
+
+      await bot.sendMessage(chatId, card, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard.length > 0 ? { inline_keyboard: keyboard } : undefined
+      });
+    }
+  });
+
+  // /postcab command
+  bot.onText(/\/postcab(?:\s+(.+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    const input = match[1] ? match[1].trim() : '';
+
+    if (!input) {
+      let helpMsg = `🚕 *Post a Cab Pool* 🚕\n\n`;
+      helpMsg += `Share your travel plans so classmates can join and split cab fares!\n\n`;
+      helpMsg += `*Format:* \`/postcab <destination> <date> <time> [seats] [notes]\`\n\n`;
+      helpMsg += `*Examples:*\n`;
+      helpMsg += `• \`/postcab Ranchi Airport tomorrow 06:30 AM 4\`\n`;
+      helpMsg += `• \`/postcab Tatanagar Station 12 Aug 04:00 PM 3 Uber XL\`\n`;
+      helpMsg += `• \`/postcab PM Mall Sunday 07:00 PM 4 Shopping trip\`\n`;
+      return bot.sendMessage(chatId, helpMsg, { parse_mode: 'Markdown' });
+    }
+
+    // Simple parser for /postcab <destination> <date> <time> [seats] [notes]
+    const tokens = input.split(/\s+/);
+    let seats = 4;
+    let notes = '';
+
+    // Check if last token is numeric seat count
+    const lastToken = tokens[tokens.length - 1];
+    if (/^[1-8]$/.test(lastToken)) {
+      seats = parseInt(lastToken, 10);
+      tokens.pop();
+    }
+
+    const dest = tokens.length > 0 ? tokens[0] + (tokens.length > 3 ? ` ${tokens[1]}` : '') : 'Ranchi Airport';
+    const dateStr = tokens.length > 2 ? tokens[tokens.length - 3] + ' ' + tokens[tokens.length - 2] : (tokens[1] || 'Tomorrow');
+    const timeStr = tokens.length > 1 ? tokens[tokens.length - 1] : '08:00 AM';
+
+    const rideId = await createCabRide(user.chatId, input.split(/\s+/).slice(0, 2).join(' '), tokens.slice(2, 4).join(' ') || 'Tomorrow', timeStr || '08:00 AM', seats, notes);
+
+    const userRoll = user.email.split('@')[0].toUpperCase();
+
+    let text = `🎉 *Cab Pool Created & Posted!* 🚕\n\n`;
+    text += `📍 *Destination:* ${input}\n`;
+    text += `👤 *Host:* ${userRoll}\n`;
+    text += `👥 *Max Seats:* ${seats}\n\n`;
+    text += `_Classmates can view and join your cab pool by running /cab!_`;
+
+    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
   });
 
   return bot;

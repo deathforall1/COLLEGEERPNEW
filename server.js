@@ -6,7 +6,7 @@ const path = require('path');
 const { generateICS } = require('./ics-generator');
 const { initBot } = require('./bot');
 const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPAttendance, fetchXLRIERPCourseMaterials, fetchXLRIERPStudentProfile } = require('./erp-client');
-const { getUser, addExpense, getUserBalances, settleExpensesBetweenUsers } = require('./database');
+const { getUser, addExpense, getUserBalances, settleExpensesBetweenUsers, createCabRide, getActiveCabRides } = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -451,6 +451,39 @@ app.post('/api/split-expense', async (req, res) => {
     return res.json({ success: true, message: 'Expense added successfully.' });
   } catch (err) {
     console.error(`[API] Error splitting expense: ${err.message}`);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 10. Fetch active campus cab pools
+ * Example: GET /api/cabs
+ */
+app.get('/api/cabs', async (req, res) => {
+  try {
+    const rides = await getActiveCabRides();
+    return res.json({ success: true, data: rides });
+  } catch (err) {
+    console.error(`[API] Error fetching cab pools: ${err.message}`);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 11. Post a new cab pool
+ * Example: POST /api/post-cab { creatorChatId, destination, travelDate, travelTime, maxSeats, notes }
+ */
+app.post('/api/post-cab', async (req, res) => {
+  const { creatorChatId, destination, travelDate, travelTime, maxSeats, notes } = req.body;
+  if (!creatorChatId || !destination || !travelDate || !travelTime) {
+    return res.status(400).json({ error: 'Missing required parameters: creatorChatId, destination, travelDate, travelTime.' });
+  }
+
+  try {
+    const rideId = await createCabRide(creatorChatId, destination, travelDate, travelTime, maxSeats || 4, notes || '');
+    return res.json({ success: true, message: 'Cab pool posted successfully.', rideId });
+  } catch (err) {
+    console.error(`[API] Error posting cab pool: ${err.message}`);
     return res.status(500).json({ error: err.message });
   }
 });
