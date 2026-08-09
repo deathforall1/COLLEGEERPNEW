@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { generateICS } = require('./ics-generator');
 const { initBot } = require('./bot');
-const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPAttendance } = require('./erp-client');
+const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPAttendance, fetchXLRIERPCourseMaterials, fetchXLRIERPStudentProfile } = require('./erp-client');
 const { getUser } = require('./database');
 
 const app = express();
@@ -349,6 +349,70 @@ app.get('/api/attendance', async (req, res) => {
     return res.json({ success: true, data });
   } catch (err) {
     console.error(`[API] Error fetching attendance: ${err.message}`);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 6. Fetch course materials by courseOfferId
+ * Example: GET /api/materials?courseOfferId=...&chatId=...
+ */
+app.get('/api/materials', async (req, res) => {
+  const { email, password, chatId, courseOfferId } = req.query;
+
+  if (!courseOfferId) {
+    return res.status(400).json({ error: 'Missing courseOfferId parameter.' });
+  }
+
+  try {
+    let finalEmail = email;
+    let finalPassword = password;
+
+    if (chatId) {
+      const user = await getUser(chatId);
+      if (!user) return res.status(404).json({ error: 'User not registered.' });
+      finalEmail = user.email;
+      finalPassword = user.password;
+    }
+
+    if (!finalEmail || !finalPassword) {
+      return res.status(400).json({ error: 'Missing email/password or chatId.' });
+    }
+
+    const data = await fetchXLRIERPCourseMaterials(finalEmail, finalPassword, courseOfferId);
+    return res.json({ success: true, data });
+  } catch (err) {
+    console.error(`[API] Error fetching course materials: ${err.message}`);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 7. Fetch student ID card profile
+ * Example: GET /api/idcard?chatId=...
+ */
+app.get('/api/idcard', async (req, res) => {
+  const { email, password, chatId } = req.query;
+
+  try {
+    let finalEmail = email;
+    let finalPassword = password;
+
+    if (chatId) {
+      const user = await getUser(chatId);
+      if (!user) return res.status(404).json({ error: 'User not registered.' });
+      finalEmail = user.email;
+      finalPassword = user.password;
+    }
+
+    if (!finalEmail || !finalPassword) {
+      return res.status(400).json({ error: 'Missing email/password or chatId.' });
+    }
+
+    const data = await fetchXLRIERPStudentProfile(finalEmail, finalPassword);
+    return res.json({ success: true, data });
+  } catch (err) {
+    console.error(`[API] Error fetching student profile: ${err.message}`);
     return res.status(500).json({ error: err.message });
   }
 });

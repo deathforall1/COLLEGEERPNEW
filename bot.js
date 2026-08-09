@@ -17,13 +17,14 @@ const {
   getSessionNotes,
   deleteSessionNote
 } = require('./database');
-const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPMessMenu, fetchXLRIERPGrades, fetchXLRIERPAttendance } = require('./erp-client');
+const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPMessMenu, fetchXLRIERPGrades, fetchXLRIERPAttendance, fetchXLRIERPCourseMaterials, downloadXLRIERPFile, fetchXLRIERPStudentProfile } = require('./erp-client');
 const { initScheduler } = require('./scheduler');
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000';
 
 const tempNotes = new Map();
+const materialsCache = new Map();
 
 // Candidate paths for discovery
 const MENU_CANDIDATES = [
@@ -221,6 +222,10 @@ function initBot() {
     { command: 'mess_menu', description: 'View mess menu (e.g. /mess_menu tomorrow)' },
     { command: 'grades', description: 'View grades and CGPA summary' },
     { command: 'attendance', description: 'View course attendance and skip verdicts' },
+    { command: 'materials', description: 'Browse and download course handouts/slides' },
+    { command: 'idcard', description: 'View digital student ID card' },
+    { command: 'wrapped', description: 'View XLRI term attendance summary' },
+    { command: 'eateries', description: 'Campus food spots & canteen guide' },
     { command: 'calendar', description: 'Open interactive calendar WebApp' },
     { command: 'logout', description: 'Delete your credentials and logout' }
   ]).then(() => {
@@ -239,7 +244,7 @@ function initBot() {
   // /start command
   bot.onText(/\/start/, (msg) => {
     const chatId = msg.chat.id;
-    const greeting = `👋 *Welcome to the XLRI ERP Bot!*\n\nI can automatically send your schedule every night and help you query your classes, quizzes, mess menu, grades, and attendance directly in Telegram.\n\n🔑 *Get Started:*\nTo link your XLRI account, use the login command:\n\`/login your_email@astra.xlri.ac.in your_password\`\n\n⚙️ *Available Commands:*\n• /schedule - Fetch today and tomorrow's classes\n• /activities - List quizzes/activities for the next 7 days\n• /calendar - Open the interactive monthly calendar WebApp\n• /sections - Select your course sections\n• /share - Share calendar with a classmate\n• /unshare - Stop calendar sharing with a classmate\n• /friends - View linked friends and check common free slots\n• /mess\\_menu - View today's mess menu\n• /grades - View your grades and CGPA\n• /attendance - View your course attendance and bunk verdicts\n• /logout - Permanent deletion of your credentials\n\n_Note: Credentials are stored securely and encrypted on disk using AES-256._`;
+    const greeting = `👋 *Welcome to the XLRI ERP Bot!*\n\nI can automatically send your schedule every night and help you query your classes, quizzes, mess menu, grades, materials, and attendance directly in Telegram.\n\n🔑 *Get Started:*\nTo link your XLRI account, use the login command:\n\`/login your_email@astra.xlri.ac.in your_password\`\n\n⚙️ *Available Commands:*\n• /schedule - Fetch today and tomorrow's classes\n• /activities - List quizzes/activities for next 7 days\n• /materials - Browse and download course slides/documents\n• /idcard - View digital student ID card\n• /attendance - View attendance and bunk verdicts\n• /wrapped - View XLRI term attendance summary\n• /eateries - Campus canteens & food spot guide\n• /calendar - Open interactive calendar WebApp\n• /sections - Select your course sections\n• /share - Share calendar with a classmate\n• /friends - View linked friends and common free slots\n• /mess\\_menu - View today's mess menu\n• /grades - View your grades and CGPA\n• /logout - Permanent deletion of your credentials\n\n_Note: Credentials are stored securely and encrypted on disk using AES-256._`;
     bot.sendMessage(chatId, greeting, { parse_mode: 'Markdown' });
   });
 
@@ -514,6 +519,60 @@ function initBot() {
         await bot.sendMessage(chatId, successText, { parse_mode: 'Markdown' });
       } catch (err) {
         await bot.sendMessage(chatId, `❌ Failed to save reminder: ${err.message}`);
+      }
+      return;
+    }
+
+    // 6. Course Materials List Callback
+    if (data.startsWith('mat_course_')) {
+      const courseOfferId = data.slice(11);
+      const user = await getUser(chatId);
+      if (!user) return bot.answerCallbackQuery(query.id, { text: 'Session expired.' });
+
+      await bot.answerCallbackQuery(query.id, { text: 'Fetching course materials...' });
+
+      try {
+        const materials = await fetchXLRIERPCourseMaterials(user.email, user.password, courseOfferId);
+
+        if (!materials || materials.length === 0) {
+          return bot.sendMessage(chatId, `ℹ️ *No Materials Found*\nNo files or handouts have been uploaded to ERP for this course offering yet.`, { parse_mode: 'Markdown' });
+        }
+
+        const buttons = [];
+        materials.forEach(m => {
+          materialsCache.set(m.id, m);
+          const sizeKb = m.size ? `${(m.size / 1024).toFixed(0)} KB` : 'File';
+          buttons.push([{ text: `📄 ${m.originalName || 'Document'} (${sizeKb})`, callback_data: `dl_mat_${m.id}` }]);
+        });
+
+        const matText = `📚 *Course Materials (${materials.length} file${materials.length !== 1 ? 's' : ''})*\n\nTap any document below to download it directly to Telegram:`;
+        await bot.sendMessage(chatId, matText, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: buttons } });
+      } catch (err) {
+        await bot.sendMessage(chatId, `❌ Failed to fetch course materials: ${err.message}`);
+      }
+      return;
+    }
+
+    // 7. Download Material File Callback
+    if (data.startsWith('dl_mat_')) {
+      const matId = data.slice(7);
+      const mat = materialsCache.get(matId);
+      if (!mat) {
+        return bot.answerCallbackQuery(query.id, { text: '⚠️ File session expired. Please run /materials again.', show_alert: true });
+      }
+
+      const user = await getUser(chatId);
+      if (!user) return bot.answerCallbackQuery(query.id, { text: 'Session expired.' });
+
+      await bot.answerCallbackQuery(query.id, { text: `Downloading ${mat.originalName}...` });
+      const statusMsg = await bot.sendMessage(chatId, `📥 *Downloading file from XLRI ERP...*\n\`${mat.originalName}\``, { parse_mode: 'Markdown' });
+
+      try {
+        const fileBuffer = await downloadXLRIERPFile(user.email, user.password, mat.url);
+        await bot.sendDocument(chatId, fileBuffer, {}, { filename: mat.originalName || 'document.pdf' });
+        await bot.deleteMessage(chatId, statusMsg.message_id);
+      } catch (err) {
+        await bot.editMessageText(`❌ Failed to download document: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
       }
       return;
     }
@@ -977,6 +1036,145 @@ function initBot() {
     } catch (err) {
       bot.editMessageText(`❌ Failed to fetch attendance: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
     }
+  });
+
+  // /materials command
+  bot.onText(/\/materials?/, async (msg) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    const loadingMsg = await bot.sendMessage(chatId, `📚 *Fetching your active courses...*`, { parse_mode: 'Markdown' });
+    try {
+      const erpData = await fetchXLRIERPData(user.email, user.password);
+      const courses = erpData.courses || [];
+
+      if (courses.length === 0) {
+        return bot.editMessageText(`⚠️ *No Courses Found.*\nCould not retrieve your active course offerings from ERP.`, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+      }
+
+      const buttons = courses.map(c => {
+        const name = c.course?.courseName || c.courseOfferCode || 'Course';
+        return [{ text: `📖 ${name}`, callback_data: `mat_course_${c.id}` }];
+      });
+
+      await bot.editMessageText(`📚 *Course Materials & Handouts*\nSelect a course below to view and download its materials directly:`, {
+        chat_id: chatId,
+        message_id: loadingMsg.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: buttons }
+      });
+    } catch (err) {
+      bot.editMessageText(`❌ Failed to fetch courses: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
+    }
+  });
+
+  // /idcard and /id command
+  bot.onText(/\/(?:idcard|id)/, async (msg) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    const loadingMsg = await bot.sendMessage(chatId, `🪪 *Generating Digital Student ID Card...*`, { parse_mode: 'Markdown' });
+    try {
+      const profile = await fetchXLRIERPStudentProfile(user.email, user.password);
+      
+      let cardText = `🪪 *XLRI STUDENT DIGITAL ID CARD* 🪪\n`;
+      cardText += `━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      cardText += `👤 *Name:* ${profile.name}\n`;
+      cardText += `🆔 *Roll Number:* \`${profile.rollNumber}\`\n`;
+      cardText += `📧 *Email:* \`${profile.email}\`\n`;
+      cardText += `🏫 *Institute:* ${profile.instituteName}\n`;
+      cardText += `✅ *Status:* Active Student\n`;
+      cardText += `━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      cardText += `_Official Digital Identity verification profile_`;
+
+      await bot.deleteMessage(chatId, loadingMsg.message_id);
+      await bot.sendMessage(chatId, cardText, { parse_mode: 'Markdown' });
+    } catch (err) {
+      bot.editMessageText(`❌ Failed to generate ID Card: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
+    }
+  });
+
+  // /wrapped command
+  bot.onText(/\/wrapped/, async (msg) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    const loadingMsg = await bot.sendMessage(chatId, `🎁 *Generating your XLRI Term Wrapped...*`, { parse_mode: 'Markdown' });
+    try {
+      const data = await fetchXLRIERPAttendance(user.email, user.password);
+      const list = data.attendance || [];
+
+      if (list.length === 0) {
+        return bot.editMessageText(`⚠️ *No attendance data found for this term.*`, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+      }
+
+      let grandTotal = 0;
+      let grandAttended = 0;
+      let highestAttendedCourse = list[0];
+      let mostBunkedCourse = list[0];
+      let totalBunksRemaining = 0;
+
+      list.forEach(c => {
+        grandTotal += c.total;
+        grandAttended += c.attended;
+
+        if (c.percent > (highestAttendedCourse.percent || 0)) highestAttendedCourse = c;
+        if (c.percent < (mostBunkedCourse.percent || 100)) mostBunkedCourse = c;
+
+        if (c.bunkVerdict && c.bunkVerdict.mode === 'skip') {
+          totalBunksRemaining += c.bunkVerdict.count;
+        }
+      });
+
+      const overallPercent = grandTotal > 0 ? (Math.round((grandAttended / grandTotal) * 1000) / 10) : 100;
+      let streakBadge = '🏆 *Academic Scholar*';
+      if (overallPercent < 80) streakBadge = '🏄‍♂️ *Calculated Bunk Specialist*';
+      else if (overallPercent < 90) streakBadge = '⚡ *Balanced Academic Achiever*';
+
+      let text = `🎉 *XLRI TERM WRAPPED (${data.termCode || data.termName})* 🎉\n`;
+      text += `━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      text += `📊 *Overall Attendance:* *${overallPercent}%* (${grandAttended}/${grandTotal} classes)\n`;
+      text += `🎖️ *Your Persona:* ${streakBadge}\n\n`;
+      text += `🌟 *Star Attendance Course:* ${highestAttendedCourse.courseName} (*${highestAttendedCourse.percent}%*)\n`;
+      text += `😴 *Most Skipped Course:* ${mostBunkedCourse.courseName} (*${mostBunkedCourse.percent}%*)\n`;
+      text += `🏖️ *Available Bunks Remaining:* *${totalBunksRemaining}* classes across term\n`;
+      text += `━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      text += `_Keep pushing! Term completion is just around the corner._ 🚀`;
+
+      await bot.editMessageText(text, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
+    } catch (err) {
+      bot.editMessageText(`❌ Failed to generate Term Wrapped: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
+    }
+  });
+
+  // /eateries command
+  bot.onText(/\/eateries/, async (msg) => {
+    const chatId = msg.chat.id;
+    let guide = `🍕 *XLRI Campus Food Spots & Canteen Guide* 🍔\n\n`;
+    guide += `☕ *Bishu Da's Chai Kiosk (Old Hostel Backdoor)*\n`;
+    guide += `• *Must Try:* Special Adrak Chai, Masala Omelette, Samosa\n`;
+    guide += `• *Timings:* 7:00 AM - 11:30 PM\n\n`;
+    guide += `🍛 *GH Main Mess & Dining Hall*\n`;
+    guide += `• *Must Try:* South Indian Dosa Counters, Special Sunday Lunch\n`;
+    guide += `• *Timings:* 7:30 AM - 10:00 PM\n\n`;
+    guide += `🍗 *Master Chef & Late Night Canteen*\n`;
+    guide += `• *Must Try:* Chicken Frankie, Paneer Butter Masala, Cold Coffee\n`;
+    guide += `• *Timings:* 6:00 PM - 2:00 AM (Late Night Fuel 🌙)\n\n`;
+    guide += `🥪 *Nescafe Kiosk / Maggi Corner*\n`;
+    guide += `• *Must Try:* Double Cheese Maggi, Iced Americano\n`;
+    guide += `• *Timings:* 8:00 AM - 10:00 PM\n\n`;
+    guide += `_Tip: Run /mess_menu anytime to see today's official mess food schedule!_`;
+    
+    bot.sendMessage(chatId, guide, { parse_mode: 'Markdown' });
   });
 
   // /share command
