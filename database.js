@@ -107,15 +107,32 @@ async function initDatabase() {
       );
     `;
     await pool.query(queryNotes);
+
+    const queryExpenses = `
+      CREATE TABLE IF NOT EXISTS expenses (
+        id SERIAL PRIMARY KEY,
+        payer_chat_id BIGINT NOT NULL,
+        payee_chat_id BIGINT NOT NULL,
+        amount NUMERIC(10, 2) NOT NULL,
+        description TEXT NOT NULL,
+        status VARCHAR(20) DEFAULT 'unsettled',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    await pool.query(queryExpenses);
     console.log('[DB] PostgreSQL database tables initialized successfully.');
   } else {
     if (!fs.existsSync(DB_FILE)) {
-      writeData({ shares: [], session_notes: {} });
+      writeData({ shares: [], session_notes: {}, expenses: [] });
     } else {
       const dbData = readData();
       let updated = false;
       if (!dbData.shares) {
         dbData.shares = [];
+        updated = true;
+      }
+      if (!dbData.expenses) {
+        dbData.expenses = [];
         updated = true;
       }
       if (!dbData.session_notes) {
@@ -535,6 +552,102 @@ async function deleteSessionNote(chatId, sessionId) {
   }
 }
 
+async function addExpense(payerChatId, payeeChatId, amount, description) {
+  const payerCid = Number(payerChatId);
+  const payeeCid = Number(payeeChatId);
+  const amt = parseFloat(amount);
+
+  if (pool) {
+    const query = `
+      INSERT INTO expenses (payer_chat_id, payee_chat_id, amount, description, status)
+      VALUES ($1, $2, $3, $4, 'unsettled');
+    `;
+    await pool.query(query, [payerCid, payeeCid, amt, description]);
+  } else {
+    const dbData = readData();
+    if (!dbData.expenses) dbData.expenses = [];
+    dbData.expenses.push({
+      id: Date.now(),
+      payer_chat_id: payerCid,
+      payee_chat_id: payeeCid,
+      amount: amt,
+      description,
+      status: 'unsettled',
+      created_at: new Date().toISOString()
+    });
+    writeData(dbData);
+  }
+}
+
+async function getUserBalances(chatId) {
+  const cid = Number(chatId);
+  let rows = [];
+
+  if (pool) {
+    const query = `
+      SELECT payer_chat_id, payee_chat_id, amount, description
+      FROM expenses
+      WHERE (payer_chat_id = $1 OR payee_chat_id = $1) AND status = 'unsettled';
+    `;
+    const res = await pool.query(query, [cid]);
+    rows = res.rows.map(r => ({
+      payer_chat_id: Number(r.payer_chat_id),
+      payee_chat_id: Number(r.payee_chat_id),
+      amount: parseFloat(r.amount),
+      description: r.description
+    }));
+  } else {
+    const dbData = readData();
+    const expenses = dbData.expenses || [];
+    rows = expenses.filter(e => (e.payer_chat_id === cid || e.payee_chat_id === cid) && e.status === 'unsettled');
+  }
+
+  const friendsMap = {};
+  rows.forEach(r => {
+    const isPayer = r.payer_chat_id === cid;
+    const counterpartId = isPayer ? r.payee_chat_id : r.payer_chat_id;
+
+    if (!friendsMap[counterpartId]) {
+      friendsMap[counterpartId] = { paidByMe: 0, paidByFriend: 0, items: [] };
+    }
+
+    if (isPayer) {
+      friendsMap[counterpartId].paidByMe += r.amount;
+      friendsMap[counterpartId].items.push({ type: 'paid', amount: r.amount, description: r.description });
+    } else {
+      friendsMap[counterpartId].paidByFriend += r.amount;
+      friendsMap[counterpartId].items.push({ type: 'owed', amount: r.amount, description: r.description });
+    }
+  });
+
+  return friendsMap;
+}
+
+async function settleExpensesBetweenUsers(chatId1, chatId2) {
+  const cid1 = Number(chatId1);
+  const cid2 = Number(chatId2);
+
+  if (pool) {
+    const query = `
+      UPDATE expenses
+      SET status = 'settled'
+      WHERE ((payer_chat_id = $1 AND payee_chat_id = $2) OR (payer_chat_id = $2 AND payee_chat_id = $1))
+        AND status = 'unsettled';
+    `;
+    await pool.query(query, [cid1, cid2]);
+  } else {
+    const dbData = readData();
+    if (dbData.expenses) {
+      dbData.expenses.forEach(e => {
+        if (((e.payer_chat_id === cid1 && e.payee_chat_id === cid2) || (e.payer_chat_id === cid2 && e.payee_chat_id === cid1)) && e.status === 'unsettled') {
+          e.status = 'settled';
+        }
+      });
+      writeData(dbData);
+    }
+  }
+}
+
 module.exports = {
   initDatabase,
   saveUser,
@@ -551,5 +664,8 @@ module.exports = {
   areFriends,
   saveSessionNote,
   getSessionNotes,
-  deleteSessionNote
+  deleteSessionNote,
+  addExpense,
+  getUserBalances,
+  settleExpensesBetweenUsers
 };

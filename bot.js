@@ -15,7 +15,10 @@ const {
   areFriends,
   saveSessionNote,
   getSessionNotes,
-  deleteSessionNote
+  deleteSessionNote,
+  addExpense,
+  getUserBalances,
+  settleExpensesBetweenUsers
 } = require('./database');
 const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPMessMenu, fetchXLRIERPGrades, fetchXLRIERPAttendance, fetchXLRIERPCourseMaterials, downloadXLRIERPFile, fetchXLRIERPStudentProfile } = require('./erp-client');
 const { initScheduler } = require('./scheduler');
@@ -214,6 +217,9 @@ function initBot() {
     { command: 'attendance', description: 'View course attendance and skip verdicts' },
     { command: 'materials', description: 'Browse and download course slides/documents' },
     { command: 'idcard', description: 'View digital student ID card' },
+    { command: 'split', description: 'Split expense with a friend: /split 300 B25019 Pizza' },
+    { command: 'balances', description: 'View who owes whom in your friend circle' },
+    { command: 'settle', description: 'Settle expenses with a classmate: /settle B25019' },
     { command: 'eateries', description: 'Campus eateries & contact numbers' },
     { command: 'wrapped', description: 'View XLRI term attendance summary' },
     { command: 'activities', description: 'Show academic activities for next 7 days' },
@@ -578,6 +584,36 @@ function initBot() {
       } catch (err) {
         await bot.editMessageText(`❌ Failed to download document: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
       }
+      return;
+    }
+
+    // 7. Splitwise Callbacks
+    if (data.startsWith('split_friend_')) {
+      const friendChatId = data.slice(13);
+      const friend = await getUser(friendChatId);
+      const friendRoll = friend ? friend.email.split('@')[0].toUpperCase() : 'Friend';
+      await bot.answerCallbackQuery(query.id);
+      return bot.sendMessage(chatId, `💸 *Split Expense with ${friendRoll}*\n\nTo record an expense, type:\n\`/split 300 ${friendRoll} Pizza\``, { parse_mode: 'Markdown' });
+    }
+
+    if (data === 'split_view_balances') {
+      await bot.answerCallbackQuery(query.id);
+      return handleBalancesCommand(chatId);
+    }
+
+    if (data.startsWith('split_settle_')) {
+      const friendChatId = data.slice(13);
+      const friend = await getUser(friendChatId);
+      if (!friend) return bot.answerCallbackQuery(query.id, { text: 'Friend not found.' });
+      
+      const user = await getUser(chatId);
+      await settleExpensesBetweenUsers(chatId, friendChatId);
+      await bot.answerCallbackQuery(query.id, { text: 'Settled up!' });
+      
+      const friendRoll = friend.email.split('@')[0].toUpperCase();
+      const userRoll = user ? user.email.split('@')[0].toUpperCase() : 'Classmate';
+      await bot.sendMessage(chatId, `🤝 *Settled Up!*\nAll expenses with *${friendRoll}* (${friend.email}) have been marked as settled.`, { parse_mode: 'Markdown' });
+      await bot.sendMessage(friendChatId, `🔔 *Settled Up!*\n*${userRoll}* marked all expenses between you as settled.`, { parse_mode: 'Markdown' });
       return;
     }
   });
@@ -1451,6 +1487,214 @@ function initBot() {
     } catch (err) {
       bot.sendMessage(chatId, `❌ Failed to load upcoming classes: ${err.message}`);
     }
+  });
+
+  // Helper for balances formatting
+  async function handleBalancesCommand(chatId) {
+    const user = await getUser(chatId);
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    const balancesMap = await getUserBalances(chatId);
+    const friendIds = Object.keys(balancesMap);
+
+    if (friendIds.length === 0) {
+      return bot.sendMessage(chatId, `📊 *Campus Splitwise Balances*\n\n🎉 *All Settled Up!* You have 0 active expenses with your friends.`, { parse_mode: 'Markdown' });
+    }
+
+    const allUsers = await getAllUsers();
+    let text = `📊 *Campus Splitwise Balances Summary* 📊\n`;
+    text += `━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+
+    let netTotal = 0;
+
+    for (const fId of friendIds) {
+      const friendUser = allUsers.find(u => Number(u.chatId) === Number(fId));
+      const friendRoll = friendUser ? friendUser.email.split('@')[0].toUpperCase() : `Friend (${fId})`;
+      const bData = balancesMap[fId];
+      const net = bData.paidByMe - bData.paidByFriend;
+      netTotal += net;
+
+      if (net > 0) {
+        text += `🟢 *${friendRoll}* owes you *₹${net.toFixed(2)}*\n`;
+      } else if (net < 0) {
+        text += `🔴 You owe *${friendRoll}* *₹${Math.abs(net).toFixed(2)}*\n`;
+      } else {
+        text += `⚖️ *${friendRoll}*: Even (₹0.00)\n`;
+      }
+    }
+
+    text += `━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+    if (netTotal > 0) {
+      text += `💰 *Overall Net Balance:* +₹${netTotal.toFixed(2)} (You are owed money)\n\n`;
+    } else if (netTotal < 0) {
+      text += `💸 *Overall Net Balance:* -₹${Math.abs(netTotal).toFixed(2)} (You owe money)\n\n`;
+    } else {
+      text += `✨ *Overall Net Balance:* ₹0.00 (All even)\n\n`;
+    }
+
+    text += `_Run /settle <friend_roll> to mark debt as settled!_`;
+
+    return bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+  }
+
+  // /balances and /balance command
+  bot.onText(/\/(?:balances|balance)/, async (msg) => {
+    return handleBalancesCommand(msg.chat.id);
+  });
+
+  // /split command
+  bot.onText(/\/split(?:\s+(.+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    const input = match[1] ? match[1].trim() : '';
+
+    if (!input) {
+      const shares = await getShares(chatId);
+      const friends = shares.filter(s => s.status === 'accepted').map(s => s.friend);
+
+      if (friends.length === 0) {
+        return bot.sendMessage(chatId, `💸 *Campus Splitwise Expense Splitter*\n\n⚠️ *No Linked Friends Found.*\nTo split expenses with a classmate, link calendars first using:\n\`/share friend_email@astra.xlri.ac.in\` (e.g. \`/share B25019\`)`, { parse_mode: 'Markdown' });
+      }
+
+      let text = `💸 *Campus Splitwise Expense Splitter* 💸\n\n`;
+      text += `Select a friend below to split an expense, or type:\n`;
+      text += `\`/split <amount> <friend_roll> <description>\`\n\n`;
+      text += `_Example: /split 300 B25019 Pizza_`;
+
+      const keyboard = friends.map(f => {
+        const friendRoll = f.email.split('@')[0].toUpperCase();
+        return [{ text: `➕ Split with ${friendRoll}`, callback_data: `split_friend_${f.chatId}` }];
+      });
+      keyboard.push([{ text: `📊 View Balances`, callback_data: `split_view_balances` }]);
+
+      return bot.sendMessage(chatId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+      });
+    }
+
+    const tokens = input.split(/\s+/);
+    let amount = null;
+    let friendToken = null;
+    let descTokens = [];
+
+    for (const t of tokens) {
+      if (amount === null && !isNaN(parseFloat(t)) && isFinite(t)) {
+        amount = parseFloat(t);
+      } else if (friendToken === null && (t.includes('@') || /^[a-zA-Z0-9_-]+$/.test(t))) {
+        friendToken = t;
+      } else {
+        descTokens.push(t);
+      }
+    }
+
+    if (!amount || amount <= 0 || !friendToken) {
+      return bot.sendMessage(chatId, `⚠️ *Invalid Format.*\nPlease use:\n\`/split <amount> <friend_roll_or_email> <description>\`\n\n_Example: /split 300 B25019 Pizza_`, { parse_mode: 'Markdown' });
+    }
+
+    const description = descTokens.join(' ') || 'Expense';
+    const targetInput = friendToken.toLowerCase();
+
+    const allUsers = await getAllUsers();
+    let friend = null;
+    if (targetInput.includes('@')) {
+      friend = await getUserByEmail(targetInput);
+    } else {
+      friend = allUsers.find(u => u.email.split('@')[0].toLowerCase() === targetInput);
+    }
+
+    if (!friend) {
+      return bot.sendMessage(chatId, `❌ *Friend Not Registered.*\nCould not find a student registered with email or ID \`${friendToken}\`.\n\nAsk them to log in to this bot first!`, { parse_mode: 'Markdown' });
+    }
+
+    if (Number(friend.chatId) === Number(user.chatId)) {
+      return bot.sendMessage(chatId, `⚠️ You cannot split an expense with yourself!`, { parse_mode: 'Markdown' });
+    }
+
+    const perPersonShare = amount / 2;
+    await addExpense(user.chatId, friend.chatId, perPersonShare, description);
+
+    const userRoll = user.email.split('@')[0].toUpperCase();
+    const friendRoll = friend.email.split('@')[0].toUpperCase();
+
+    let confirmText = `💸 *Expense Split Recorded!* 💸\n\n`;
+    confirmText += `💰 *Total Amount:* ₹${amount.toFixed(2)}\n`;
+    confirmText += `👤 *Split With:* ${friendRoll} (${friend.email})\n`;
+    confirmText += `📝 *Description:* ${description}\n`;
+    confirmText += `📊 *Their Share Owed to You:* *₹${perPersonShare.toFixed(2)}*\n\n`;
+    confirmText += `_Run /balances to see your net balance statement._`;
+
+    await bot.sendMessage(chatId, confirmText, { parse_mode: 'Markdown' });
+
+    let notifyText = `🔔 *New Expense Split Notification!* 🔔\n\n`;
+    notifyText += `👤 *Payer:* ${userRoll} (${user.email})\n`;
+    notifyText += `💰 *Total Expense:* ₹${amount.toFixed(2)}\n`;
+    notifyText += `📝 *Description:* ${description}\n`;
+    notifyText += `🔴 *Your Share Owed:* *₹${perPersonShare.toFixed(2)}*\n\n`;
+    notifyText += `_Run /balances or /settle ${userRoll} to manage payments._`;
+
+    await bot.sendMessage(friend.chatId, notifyText, { parse_mode: 'Markdown' });
+  });
+
+  // /settle command
+  bot.onText(/\/settle(?:\s+(.+))?/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const user = await getUser(chatId);
+    if (!user) {
+      return bot.sendMessage(chatId, `⚠️ *Not Registered.*\nPlease log in first using:\n\`/login email password\``, { parse_mode: 'Markdown' });
+    }
+
+    const input = match[1] ? match[1].trim().toLowerCase() : '';
+
+    if (!input) {
+      const balancesMap = await getUserBalances(chatId);
+      const friendIds = Object.keys(balancesMap);
+
+      if (friendIds.length === 0) {
+        return bot.sendMessage(chatId, `🤝 *Campus Splitwise Settlement*\n\n🎉 *No active unsettled debts found!*`, { parse_mode: 'Markdown' });
+      }
+
+      const allUsers = await getAllUsers();
+      let text = `🤝 *Select a friend to settle all expenses with:*`;
+      const keyboard = [];
+
+      for (const fId of friendIds) {
+        const friendUser = allUsers.find(u => Number(u.chatId) === Number(fId));
+        const friendRoll = friendUser ? friendUser.email.split('@')[0].toUpperCase() : `Friend`;
+        keyboard.push([{ text: `🤝 Settle with ${friendRoll}`, callback_data: `split_settle_${fId}` }]);
+      }
+
+      return bot.sendMessage(chatId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+      });
+    }
+
+    const allUsers = await getAllUsers();
+    let friend = null;
+    if (input.includes('@')) {
+      friend = await getUserByEmail(input);
+    } else {
+      friend = allUsers.find(u => u.email.split('@')[0].toLowerCase() === input);
+    }
+
+    if (!friend) {
+      return bot.sendMessage(chatId, `❌ *Friend Not Found.*\nCould not find a student registered with ID or email \`${match[1]}\`.`, { parse_mode: 'Markdown' });
+    }
+
+    await settleExpensesBetweenUsers(user.chatId, friend.chatId);
+
+    const userRoll = user.email.split('@')[0].toUpperCase();
+    const friendRoll = friend.email.split('@')[0].toUpperCase();
+
+    await bot.sendMessage(chatId, `🤝 *Settled Up!*\nAll expenses with *${friendRoll}* (${friend.email}) have been marked as settled.`, { parse_mode: 'Markdown' });
+    await bot.sendMessage(friend.chatId, `🔔 *Settled Up!*\n**${userRoll}** marked all expenses between you as settled.`, { parse_mode: 'Markdown' });
   });
 
   return bot;

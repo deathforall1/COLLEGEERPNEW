@@ -6,7 +6,7 @@ const path = require('path');
 const { generateICS } = require('./ics-generator');
 const { initBot } = require('./bot');
 const { fetchXLRIERPData, sessionMatchesSection, activityMatchesCourses, fetchXLRIERPAttendance, fetchXLRIERPCourseMaterials, fetchXLRIERPStudentProfile } = require('./erp-client');
-const { getUser } = require('./database');
+const { getUser, addExpense, getUserBalances, settleExpensesBetweenUsers } = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -413,6 +413,44 @@ app.get('/api/idcard', async (req, res) => {
     return res.json({ success: true, data });
   } catch (err) {
     console.error(`[API] Error fetching student profile: ${err.message}`);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 8. Fetch Splitwise balances for a user
+ * Example: GET /api/balances?chatId=12345678
+ */
+app.get('/api/balances', async (req, res) => {
+  const { chatId } = req.query;
+  if (!chatId) {
+    return res.status(400).json({ error: 'Missing chatId parameter.' });
+  }
+
+  try {
+    const balances = await getUserBalances(chatId);
+    return res.json({ success: true, data: balances });
+  } catch (err) {
+    console.error(`[API] Error fetching balances: ${err.message}`);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 9. Add Splitwise expense
+ * Example: POST /api/split-expense { payerChatId, payeeChatId, amount, description }
+ */
+app.post('/api/split-expense', async (req, res) => {
+  const { payerChatId, payeeChatId, amount, description } = req.body;
+  if (!payerChatId || !payeeChatId || !amount) {
+    return res.status(400).json({ error: 'Missing required parameters: payerChatId, payeeChatId, amount.' });
+  }
+
+  try {
+    await addExpense(payerChatId, payeeChatId, amount, description || 'Expense');
+    return res.json({ success: true, message: 'Expense added successfully.' });
+  } catch (err) {
+    console.error(`[API] Error splitting expense: ${err.message}`);
     return res.status(500).json({ error: err.message });
   }
 });
