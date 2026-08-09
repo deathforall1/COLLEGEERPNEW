@@ -1088,8 +1088,9 @@ function initBot() {
       cardText += `👤 *Name:* ${profile.name}\n`;
       cardText += `🆔 *Roll Number:* \`${profile.rollNumber}\`\n`;
       cardText += `📧 *Email:* \`${profile.email}\`\n`;
+      cardText += `🎓 *Program:* ${profile.program} | *Batch:* ${profile.batch}\n`;
       cardText += `🏫 *Institute:* ${profile.instituteName}\n`;
-      cardText += `✅ *Status:* Active Student\n`;
+      cardText += `✅ *Status:* Verified Active Student\n`;
       cardText += `━━━━━━━━━━━━━━━━━━━━━━━━\n`;
       cardText += `_Official Digital Identity verification profile_`;
 

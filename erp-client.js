@@ -384,16 +384,26 @@ async function fetchXLRIERPStudentProfile(email, password) {
   if (!token) throw new Error('Authentication failed.');
 
   const headers = { 'Authorization': `Bearer ${token}` };
-  const meRes = await axios.get(`${ERP_BASE}/auth/me`, { headers, timeout: 10000 });
-  const userData = meRes.data?.data?.user || {};
+  
+  const [meRes, gradesRes] = await Promise.all([
+    axios.get(`${ERP_BASE}/auth/me`, { headers, timeout: 10000 }).catch(() => null),
+    axios.get(`${ERP_BASE}/course-offerings/me/grades`, { headers, timeout: 10000 }).catch(() => null)
+  ]);
 
-  let rollNumber = email.split('@')[0].toUpperCase();
+  const userData = meRes?.data?.data?.user || meRes?.data?.user || {};
+  const studentData = gradesRes?.data?.data?.student || {};
+
+  let rollNumber = studentData.studentId || email.split('@')[0].toUpperCase();
+  let program = studentData.programName || studentData.programCode || 'PGDM';
+  let batch = studentData.batchName || '2025-2027';
 
   return {
-    id: userData.id,
-    name: userData.firstName ? `${userData.firstName} ${userData.lastName || ''}`.trim() : 'XLRI Student',
+    id: userData.id || studentData.id,
+    name: userData.firstName ? `${userData.firstName} ${userData.lastName || ''}`.trim() : (studentData.name || 'XLRI Student'),
     email: userData.email || email,
     rollNumber,
+    program,
+    batch,
     instituteName: userData.instituteName || 'XLRI - Xavier School of Management',
     imageUrl: userData.imageUrl || null
   };
