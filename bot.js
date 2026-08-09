@@ -210,23 +210,23 @@ function initBot() {
 
   // Register commands for autocomplete / menu list
   bot.setMyCommands([
-    { command: 'start', description: 'Welcome message and bot overview' },
-    { command: 'login', description: 'Link XLRI credentials: /login email password' },
     { command: 'schedule', description: 'Show today and tomorrow\'s classes' },
+    { command: 'attendance', description: 'View course attendance and skip verdicts' },
+    { command: 'materials', description: 'Browse and download course slides/documents' },
+    { command: 'idcard', description: 'View digital student ID card' },
+    { command: 'eateries', description: 'Campus eateries & contact numbers' },
+    { command: 'wrapped', description: 'View XLRI term attendance summary' },
     { command: 'activities', description: 'Show academic activities for next 7 days' },
-    { command: 'sections', description: 'Select sections for your registered courses' },
-    { command: 'share', description: 'Share calendar with a classmate' },
-    { command: 'unshare', description: 'Stop calendar sharing with a classmate' },
-    { command: 'friends', description: 'Check shared calendars & free slots' },
-    { command: 'note', description: 'Add reminder for next class: /note text' },
     { command: 'mess_menu', description: 'View mess menu (e.g. /mess_menu tomorrow)' },
     { command: 'grades', description: 'View grades and CGPA summary' },
-    { command: 'attendance', description: 'View course attendance and skip verdicts' },
-    { command: 'materials', description: 'Browse and download course handouts/slides' },
-    { command: 'idcard', description: 'View digital student ID card' },
-    { command: 'wrapped', description: 'View XLRI term attendance summary' },
-    { command: 'eateries', description: 'Campus food spots & canteen guide' },
+    { command: 'note', description: 'Add reminder for next class: /note text' },
     { command: 'calendar', description: 'Open interactive calendar WebApp' },
+    { command: 'sections', description: 'Select sections for your registered courses' },
+    { command: 'friends', description: 'Check shared calendars & free slots' },
+    { command: 'share', description: 'Share calendar with a classmate' },
+    { command: 'unshare', description: 'Stop calendar sharing with a classmate' },
+    { command: 'start', description: 'Welcome message and bot overview' },
+    { command: 'login', description: 'Link XLRI credentials: /login email password' },
     { command: 'logout', description: 'Delete your credentials and logout' }
   ]).then(() => {
     console.log('[Bot] Autocomplete commands registered successfully with Telegram.');
