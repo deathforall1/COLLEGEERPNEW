@@ -376,7 +376,7 @@ function initBot() {
       const friend = await getUser(friendId);
       await deleteShare(chatId, friendId);
       
-      await bot.deleteMessage(chatId, query.message.message_id);
+      await bot.deleteMessage(chatId, query.message.message_id).catch(() => {});
       bot.sendMessage(chatId, `✅ Stopped sharing calendar with *${friend?.email || 'classmate'}*.`, { parse_mode: 'Markdown' });
       if (friend) {
         bot.sendMessage(friend.chatId, `⚠️ *Calendar Sharing Stopped.*\n**${user.email}** has stopped sharing their calendar with you.`, { parse_mode: 'Markdown' });
@@ -394,7 +394,7 @@ function initBot() {
       if (!friend) return bot.answerCallbackQuery(query.id, { text: 'Friend not found.' });
 
       await createShareRequest(chatId, friendId);
-      await bot.deleteMessage(chatId, query.message.message_id);
+      await bot.deleteMessage(chatId, query.message.message_id).catch(() => {});
       
       bot.sendMessage(chatId, `✅ *Calendar Sharing Linked!*\nYou and *${friend.email}* are mutually sharing calendars now.`, { parse_mode: 'Markdown' });
       bot.sendMessage(friend.chatId, `🔔 *Calendar Sharing Linked!*\n**${user.email}** accepted your share request.`, { parse_mode: 'Markdown' });
@@ -513,7 +513,11 @@ function initBot() {
           classDate = session.classDate;
         }
 
-        await bot.deleteMessage(chatId, query.message.message_id);
+        try {
+          await bot.deleteMessage(chatId, query.message.message_id);
+        } catch (e) {
+          // Ignore if message was already deleted or expired
+        }
         
         const successText = `📌 *Reminder Added!*\n\n📚 *Course:* ${courseName}\n📅 *Class Date:* ${classDate}${startTime}\n📝 *Note:* _${noteText}_\n\n_This note will show up in your /schedule and daily morning alerts!_`;
         await bot.sendMessage(chatId, successText, { parse_mode: 'Markdown' });
@@ -570,7 +574,7 @@ function initBot() {
       try {
         const fileBuffer = await downloadXLRIERPFile(user.email, user.password, mat.url);
         await bot.sendDocument(chatId, fileBuffer, {}, { filename: mat.originalName || 'document.pdf' });
-        await bot.deleteMessage(chatId, statusMsg.message_id);
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
       } catch (err) {
         await bot.editMessageText(`❌ Failed to download document: ${err.message}`, { chat_id: chatId, message_id: statusMsg.message_id });
       }
@@ -1094,7 +1098,7 @@ function initBot() {
       cardText += `━━━━━━━━━━━━━━━━━━━━━━━━\n`;
       cardText += `_Official Digital Identity verification profile_`;
 
-      await bot.deleteMessage(chatId, loadingMsg.message_id);
+      await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
       await bot.sendMessage(chatId, cardText, { parse_mode: 'Markdown' });
     } catch (err) {
       bot.editMessageText(`❌ Failed to generate ID Card: ${err.message}`, { chat_id: chatId, message_id: loadingMsg.message_id });
