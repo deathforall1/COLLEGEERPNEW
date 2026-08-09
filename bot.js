@@ -1159,20 +1159,20 @@ function initBot() {
   // /eateries command
   bot.onText(/\/eateries/, async (msg) => {
     const chatId = msg.chat.id;
-    let guide = `🍕 *XLRI Campus Food Spots & Canteen Guide* 🍔\n\n`;
-    guide += `☕ *Bishu Da's Chai Kiosk (Old Hostel Backdoor)*\n`;
+    let guide = `🍕 *XLRI Campus Eateries & Contact Guide* 🍔\n\n`;
+    guide += `☕ *Bishu Da (Chai & Snacks)*\n`;
+    guide += `• *Contact:* \`+91 99341 11398\`\n`;
     guide += `• *Must Try:* Special Adrak Chai, Masala Omelette, Samosa\n`;
-    guide += `• *Timings:* 7:00 AM - 11:30 PM\n\n`;
-    guide += `🍛 *GH Main Mess & Dining Hall*\n`;
-    guide += `• *Must Try:* South Indian Dosa Counters, Special Sunday Lunch\n`;
-    guide += `• *Timings:* 7:30 AM - 10:00 PM\n\n`;
-    guide += `🍗 *Master Chef & Late Night Canteen*\n`;
-    guide += `• *Must Try:* Chicken Frankie, Paneer Butter Masala, Cold Coffee\n`;
-    guide += `• *Timings:* 6:00 PM - 2:00 AM (Late Night Fuel 🌙)\n\n`;
-    guide += `🥪 *Nescafe Kiosk / Maggi Corner*\n`;
-    guide += `• *Must Try:* Double Cheese Maggi, Iced Americano\n`;
-    guide += `• *Timings:* 8:00 AM - 10:00 PM\n\n`;
-    guide += `_Tip: Run /mess_menu anytime to see today's official mess food schedule!_`;
+    guide += `• *Location:* Old Hostel Backdoor\n\n`;
+    guide += `🍲 *Jampot*\n`;
+    guide += `• *Contact:* \`+91 91990 80401\`\n`;
+    guide += `• *Must Try:* Rolls, Sandwiches, Cold Coffee & Shakes\n`;
+    guide += `• *Location:* Campus Kiosk\n\n`;
+    guide += `🍛 *Aiyer (South Indian Corner)*\n`;
+    guide += `• *Contact:* \`+91 94962 94335\`\n`;
+    guide += `• *Must Try:* Masala Dosa, Idli Vada, Filter Coffee\n`;
+    guide += `• *Location:* Food Court\n\n`;
+    guide += `_Tip: Tap any number above to copy or call directly! Run /mess_menu to see today's mess schedule._`;
     
     bot.sendMessage(chatId, guide, { parse_mode: 'Markdown' });
   });
